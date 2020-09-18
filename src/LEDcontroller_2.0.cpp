@@ -34,6 +34,17 @@ SSOLED ssoled;
 #define DATA_PIN 26
 #define DATA_PIN_HOLD GPIO_NUM_26
 
+
+#include <esp_now.h>
+
+#define CHANNEL 3
+#define CHANNEL_2 1
+
+esp_now_peer_info_t slave;
+
+#define PRINTSCANRESULTS 0
+#define DELETEBEFOREPAIR 0
+
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <Preferences.h>
@@ -41,30 +52,6 @@ SSOLED ssoled;
 #include "soc/rtc_cntl_reg.h"
 #include "soc/rtc.h"
 #include "driver/rtc_io.h"
-
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <BLE2902.h>
-
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
-uint32_t value = 0;
-
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-    };
-
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-    }
-};
 
 int max_bright = 11;
 int val;
@@ -117,6 +104,18 @@ String mode18 = "";
 String mode19 = "";
 String mode20 = "";
 
+String mode00 = "";
+String mode111 = "";
+String mode112 = "";
+String mode113 = "";
+String mode114 = "";
+String mode115 = "";
+String mode116 = "";
+String mode117 = "";
+String mode118 = "";
+String mode119 = "";
+String mode120 = "";
+
 Preferences preferences;
 
 const byte DNS_PORT = 53;
@@ -139,6 +138,9 @@ String htmlSaveConfirm = R"rawText(<!DOCTYPE html><html> <head> </head> <body>)r
                          + style + R"rawText(Settings saved <form action="/"><button name="Back" value="true">Back to settings</button></form> <form action="/"><button name="Exit" value="true">Exit</button></form> </body></html>)rawText";
 String htmlExitConfirm = R"rawText(<!DOCTYPE html><html> <head> </head> <body>)rawText"
                          + style + R"rawText(WiFi config stopped. Device in standart operational mode  </body></html>)rawText";
+
+
+void WiFiConfig();
 
 
 int getBatteryState() {
@@ -176,7 +178,7 @@ int getBatteryState() {
 void rebuildEditPage(String modeRAW) {
   htmlEditContent = "";
   
-  for (int i = 0; i < LEDcount; i++) {
+  for (int i = 0; i < LEDcount + 1; i++) {
     String colour = "";
     if (modeRAW.indexOf(",") != -1) {
       colour = modeRAW.substring(0, modeRAW.indexOf(","));
@@ -185,6 +187,11 @@ void rebuildEditPage(String modeRAW) {
     else {
       colour = modeRAW;
     }
+
+    Serial.print("LED");
+    Serial.print(i);
+    Serial.print(":");
+    Serial.println(colour);
 
     htmlEditContent += R"rawText(<tr><td><strong>)rawText";
     htmlEditContent += "LED" + String(i+1) + ":";
@@ -197,6 +204,7 @@ void rebuildEditPage(String modeRAW) {
     htmlEdit = htmlEditPart1 + " " + String(modeNumber) + htmlEditPart2 + htmlEditContent + htmlEditPart3;
   }
 }
+
 
 void rebuildEditPage2(String modeRAW) {
   htmlEditContent = "";
@@ -293,118 +301,446 @@ void oledOff(){
 }
 
 
-void WiFiConfig();
-
-
-// The remote service we wish to connect to.
-static BLEUUID serviceUUID("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
-// The characteristic of the remote service we are interested in.
-static BLEUUID    charUUID("beb5483e-36e1-4688-b7f5-ea07361b26a8");
-
-static boolean doConnect = false;
-static boolean connected = false;
-static boolean doScan = false;
-static BLERemoteCharacteristic* pRemoteCharacteristic;
-static BLEAdvertisedDevice* myDevice;
-
-static void notifyCallback(
-  BLERemoteCharacteristic* pBLERemoteCharacteristic,
-  uint8_t* pData,
-  size_t length,
-  bool isNotify) {
-    Serial.print("Notify callback for characteristic ");
-    Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    Serial.print(" of data length ");
-    Serial.println(length);
-    Serial.print("data: ");
-    Serial.println((char*)pData);
+void InitESPNow() {
+  WiFi.disconnect();
+  if (esp_now_init() == ESP_OK) {
+    Serial.println("ESPNow Init Success");
+  }
+  else {
+    Serial.println("ESPNow Init Failed");
+    // Retry InitESPNow, add a counte and then restart?
+    // InitESPNow();
+    // or Simply Restart
+    ESP.restart();
+  }
 }
 
-class MyClientCallback : public BLEClientCallbacks {
-  void onConnect(BLEClient* pclient) {
+
+void ScanForSlave() {
+  int8_t scanResults = WiFi.scanNetworks();
+  // reset on each scan
+  bool slaveFound = 0;
+  memset(&slave, 0, sizeof(slave));
+
+  Serial.println("");
+  if (scanResults == 0) {
+    Serial.println("No WiFi devices in AP Mode found");
+  } else {
+    Serial.print("Found "); Serial.print(scanResults); Serial.println(" devices ");
+    for (int i = 0; i < scanResults; ++i) {
+      // Print SSID and RSSI for each device found
+      String SSID = WiFi.SSID(i);
+      int32_t RSSI = WiFi.RSSI(i);
+      String BSSIDstr = WiFi.BSSIDstr(i);
+
+      //if (PRINTSCANRESULTS) {
+        Serial.print(i + 1);
+        Serial.print(": ");
+        Serial.print(SSID);
+        Serial.print(" (");
+        Serial.print(RSSI);
+        Serial.print(")");
+        Serial.println("");
+      //}
+      delay(10);
+      // Check if the current device starts with `Slave`
+      if (SSID.indexOf("Slave") == 0) {
+        // SSID of interest
+        Serial.println("Found a Slave.");
+        Serial.print(i + 1); Serial.print(": "); Serial.print(SSID); Serial.print(" ["); Serial.print(BSSIDstr); Serial.print("]"); Serial.print(" ("); Serial.print(RSSI); Serial.print(")"); Serial.println("");
+        // Get BSSID => Mac Address of the Slave
+        int mac[6];
+        if ( 6 == sscanf(BSSIDstr.c_str(), "%x:%x:%x:%x:%x:%x",  &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5] ) ) {
+          for (int ii = 0; ii < 6; ++ii ) {
+            slave.peer_addr[ii] = (uint8_t) mac[ii];
+          }
+        }
+
+        slave.channel = CHANNEL; // pick a channel
+        slave.encrypt = 0; // no encryption
+
+        slaveFound = 1;
+        // we are planning to have only one slave in this example;
+        // Hence, break after we find one, to be a bit efficient
+        break;
+      }
+    }
   }
 
-  void onDisconnect(BLEClient* pclient) {
-    connected = false;
-    Serial.println("onDisconnect");
+  if (slaveFound) {
+    Serial.println("Slave Found, processing..");
+  } else {
+    Serial.println("Slave Not Found, trying again.");
   }
-};
 
-bool connectToServer() {
-    Serial.print("Forming a connection to ");
-    Serial.println(myDevice->getAddress().toString().c_str());
+  // clean up ram
+  WiFi.scanDelete();
+}
+
+
+void deletePeer(){
+  esp_err_t delStatus = esp_now_del_peer(slave.peer_addr);
+  Serial.print("Slave Delete Status: ");
+  if (delStatus == ESP_OK) {
+    // Delete success
+    Serial.println("Success");
+  } else if (delStatus == ESP_ERR_ESPNOW_NOT_INIT) {
+    // How did we get so far!!
+    Serial.println("ESPNOW Not Init");
+  } else if (delStatus == ESP_ERR_ESPNOW_ARG) {
+    Serial.println("Invalid Argument");
+  } else if (delStatus == ESP_ERR_ESPNOW_NOT_FOUND) {
+    Serial.println("Peer not found.");
+  } else {
+    Serial.println("Not sure what happened");
+  }
+}
+
+
+bool manageSlave() {
+  if (slave.channel == CHANNEL) {
+    if (DELETEBEFOREPAIR) {
+      deletePeer();
+    }
+
+    Serial.print("Slave Status: ");
+    // check if the peer exists
+    bool exists = esp_now_is_peer_exist(slave.peer_addr);
+    if ( exists) {
+      // Slave already paired.
+      Serial.println("Already Paired");
+      return true;
+    } else {
+      // Slave not paired, attempt pair
+      esp_err_t addStatus = esp_now_add_peer(&slave);
+      if (addStatus == ESP_OK) {
+        // Pair success
+        Serial.println("Pair success");
+        return true;
+      } else if (addStatus == ESP_ERR_ESPNOW_NOT_INIT) {
+        // How did we get so far!!
+        Serial.println("ESPNOW Not Init");
+        return false;
+      } else if (addStatus == ESP_ERR_ESPNOW_ARG) {
+        Serial.println("Invalid Argument");
+        return false;
+      } else if (addStatus == ESP_ERR_ESPNOW_FULL) {
+        Serial.println("Peer list full");
+        return false;
+      } else if (addStatus == ESP_ERR_ESPNOW_NO_MEM) {
+        Serial.println("Out of memory");
+        return false;
+      } else if (addStatus == ESP_ERR_ESPNOW_EXIST) {
+        Serial.println("Peer Exists");
+        return true;
+      } else {
+        Serial.println("Not sure what happened");
+        return false;
+      }
+    }
+  } else {
+    // No slave found to process
+    Serial.println("No Slave found to process");
+    return false;
+  }
+}
+
+
+int resetCounter;
+
+
+void sendData() {
+  char sendMode[952];
+  esp_err_t result;
+
+  for(int ii = 0; ii < 10; ii++){
+    if(ii == 0){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+      resetCounter += 1;
+      if(resetCounter == 2){
+        ESP.restart();
+      }
+      mode11.toCharArray(sendMode, 952);
+    }else if(ii == 1){
+      oledOff();
+      mode12.toCharArray(sendMode, 952);
+    }else if(ii == 2){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+      mode13.toCharArray(sendMode, 952);
+    }else if(ii == 3){
+      oledOff();
+      mode14.toCharArray(sendMode, 952);
+    }else if(ii == 4){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+      mode15.toCharArray(sendMode, 952);
+    }else if(ii == 5){
+      oledOff();
+      mode16.toCharArray(sendMode, 952);
+    }else if(ii == 6){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+      mode17.toCharArray(sendMode, 952);
+    }else if(ii == 7){
+      oledOff();
+      mode18.toCharArray(sendMode, 952);
+    }else if(ii == 8){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+      mode19.toCharArray(sendMode, 952);
+    }else if(ii == 9){
+      oledOff();
+      mode20.toCharArray(sendMode, 952);
+    }
     
-    BLEClient*  pClient  = BLEDevice::createClient();
-    Serial.println(" - Created client");
+    const uint8_t *peer_addr = slave.peer_addr;
+    Serial.print("Sending: ");
+    
+      for(int i = 0; i < (953/200)+1; i++){
+      delay(1);
+      char k[200];
+      for(int j = 0; j < 200; j++){
+        delay(1);
+        if((j+(i*200)) < 952){
+          k[j] = sendMode[j+(i*200)];
+        } 
+      }
+      Serial.println(k);
 
-    pClient->setClientCallbacks(new MyClientCallback());
-
-    // Connect to the remove BLE Server.
-    pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
-    Serial.println(" - Connected to server");
-
-    // Obtain a reference to the service we are after in the remote BLE server.
-    BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
-    if (pRemoteService == nullptr) {
-      Serial.print("Failed to find our service UUID: ");
-      Serial.println(serviceUUID.toString().c_str());
-      pClient->disconnect();
-      return false;
+      result = esp_now_send(peer_addr, (uint8_t *) &k, sizeof(k));
+      delay(1);
     }
-    Serial.println(" - Found our service");
+  }
 
 
-    // Obtain a reference to the characteristic in the service of the remote BLE server.
-    pRemoteCharacteristic = pRemoteService->getCharacteristic(charUUID);
-    if (pRemoteCharacteristic == nullptr) {
-      Serial.print("Failed to find our characteristic UUID: ");
-      Serial.println(charUUID.toString().c_str());
-      pClient->disconnect();
-      return false;
-    }
-    Serial.println(" - Found our characteristic");
-
-    // Read the value of the characteristic.
-    if(pRemoteCharacteristic->canRead()) {
-      std::string value = pRemoteCharacteristic->readValue();
-      Serial.print("The characteristic value was: ");
-      Serial.println(value.c_str());
-    }
-
-    if(pRemoteCharacteristic->canNotify())
-      pRemoteCharacteristic->registerForNotify(notifyCallback);
-
-    connected = true;
-    return true;
+delay(3);
+//result = esp_now_send(peer_addr, (uint8_t *) &mode11, sizeof(mode11));
+  Serial.print("Send Status: ");
+  if (result == ESP_OK) {
+    Serial.println("Success");
+  } else if (result == ESP_ERR_ESPNOW_NOT_INIT) {
+    // How did we get so far!!
+    Serial.println("ESPNOW not Init.");
+  } else if (result == ESP_ERR_ESPNOW_ARG) {
+    Serial.println("Invalid Argument");
+  } else if (result == ESP_ERR_ESPNOW_INTERNAL) {
+    Serial.println("Internal Error");
+  } else if (result == ESP_ERR_ESPNOW_NO_MEM) {
+    Serial.println("ESP_ERR_ESPNOW_NO_MEM");
+  } else if (result == ESP_ERR_ESPNOW_NOT_FOUND) {
+    Serial.println("Peer not found.");
+  } else {
+    Serial.println("Not sure what happened");
+  }
 }
-/**
- * Scan for BLE servers and find the first one that advertises the service we are looking for.
- */
-class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
- /**
-   * Called for each advertising BLE server.
-   */
-  void onResult(BLEAdvertisedDevice advertisedDevice) {
-    Serial.print("BLE Advertised Device found: ");
-    Serial.println(advertisedDevice.toString().c_str());
 
-    // We have found a device, let us now see if it contains the service we are looking for.
-    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
+int iii;
 
-      BLEDevice::getScan()->stop();
-      myDevice = new BLEAdvertisedDevice(advertisedDevice);
-      doConnect = true;
-      doScan = true;
+void configDeviceAP() {
+  const char *SSID = "Slave_1";
+  bool result = WiFi.softAP(SSID, "Slave_1_Password", CHANNEL_2, 0);
+  if (!result) {
+    Serial.println("AP Config failed.");
+  } else {
+    Serial.println("AP Config Success. Broadcasting with AP: " + String(SSID));
+  }
+}
 
-    } // Found our server
-  } // onResult
-}; // MyAdvertisedDeviceCallbacks
+
+void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
+  // int ii;
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print("Last Packet Recv from: "); Serial.println(macStr);
+  Serial.print("Last Packet Recv Data: "); Serial.println((char*)data);
+  Serial.println("");
+
+    if(iii < 5){
+      if(iii == 0){
+        oledOn();
+        int rc;
+        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+        if (rc != OLED_NOT_FOUND){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+        }
+      }
+      mode111 = mode111 + (char*)data;
+      preferences.putString("mode11", mode00);
+      delay(3);
+      preferences.putString("mode11", mode111);
+      Serial.println(mode111);
+    }else if(iii < 10){
+      if(iii == 5){
+        oledOff();
+      }
+      mode112 = mode112 + (char*)data;
+      preferences.putString("mode12", mode00);
+      delay(3);
+      preferences.putString("mode12", mode112);
+      Serial.println(mode112);
+    }else if(iii < 15){
+      if(iii == 10){
+        oledOn();
+        int rc;
+        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+        if (rc != OLED_NOT_FOUND){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+        }
+      }
+      mode113 = mode113 + (char*)data;
+      preferences.putString("mode13", mode00);
+      delay(3);
+      preferences.putString("mode13", mode113);
+      Serial.println(mode113);
+    }else if(iii < 20){
+      if(iii == 15){
+        oledOff();
+      }
+      mode114 = mode114 + (char*)data;
+      preferences.putString("mode14", mode00);
+      delay(3);
+      preferences.putString("mode14", mode114);
+      Serial.println(mode114);
+    }else if(iii < 25){
+      if(iii == 20){
+        oledOn();
+        int rc;
+        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+        if (rc != OLED_NOT_FOUND){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+        }
+      }
+      mode115 = mode115 + (char*)data;
+      preferences.putString("mode15", mode00);
+      delay(3);
+      preferences.putString("mode15", mode115);
+      Serial.println(mode115);
+    }else if(iii < 30){
+      if(iii == 25){
+        oledOff();
+      }
+      mode116 = mode116 + (char*)data;
+      preferences.putString("mode16", mode00);
+      delay(3);
+      preferences.putString("mode16", mode116);
+      Serial.println(mode116);
+    }else if(iii < 35){
+      if(iii == 30){
+        oledOn();
+        int rc;
+        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+        if (rc != OLED_NOT_FOUND){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+        }
+      }
+      mode117 = mode117 + (char*)data;
+      preferences.putString("mode17", mode00);
+      delay(3);
+      preferences.putString("mode17", mode117);
+      Serial.println(mode117);
+    }else if(iii < 40){
+      if(iii == 35){
+        oledOff();
+      }
+      mode118 = mode118 + (char*)data;
+      preferences.putString("mode18", mode00);
+      delay(3);
+      preferences.putString("mode18", mode118);
+      Serial.println(mode118);
+    }else if(iii < 45){
+      if(iii == 40){
+        oledOn();
+        int rc;
+        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+        if (rc != OLED_NOT_FOUND){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+        }
+      }
+      mode119 = mode119 + (char*)data;
+      preferences.putString("mode19", mode00);
+      delay(3);
+      preferences.putString("mode19", mode119);
+      Serial.println(mode119);
+    }else if(iii < 50){
+      if(iii == 45){
+        oledOff();
+      }
+      mode120 = mode120 + (char*)data;
+      preferences.putString("mode20", mode00);
+      delay(3);
+      preferences.putString("mode20", mode120);
+      Serial.println(mode120);
+    }
+
+    iii+=1;
+
+    if(iii == 50){
+      ESP.restart();
+    }
+
+  // mode111 = mode111 + (char*)data;
+  // preferences.putString("mode11", mode111);
+   
+}
+
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+  Serial.print("Last Packet Sent to: "); Serial.println(macStr);
+  Serial.print("Last Packet Send Status: ");  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+ 
+  //status == ESP_NOW_SEND_SUCCESS ?  : );
+}
 
 
 void btSGet(){
 
-  //#%3A=%23ffff80&LED2%3A=%23ffff00&LED3%3A=%23ff80c0&LED4%3A=%23ff80ff&LED5%3A=%23ff00ff&LED6%3A=%23ff0080&LED7%3A=%238000ff&LED8%3A=%23000000&LED9%3A=%23000000&LED10%3A=%23000000&LED11%3A=%23000000&LED12%3A=%23000000&LED13%3A=%23000000&LED14%3A=%23000000&LED15%3A=%23000000&LED16%3A=%23000000&LED17%3A=%23000000&LED18%3A=%23000000&LED19%3A=%23000000&LED20%3A=%23000000&LED21%3A=%23000000&LED22%3A=%23000000&LED23%3A=%23000000&LED24%3A=%23000000&LED25%3A=%23000000&LED26%3A=%23000000&LED27%3A=%23000000&LED28%3A=%23000000&LED29%3A=%23000000&LED30%3A=%23800040&LED31%3A=%23000000&LED32%3A=%23000000&LED33%3A=%23000000&LED34%3A=%23000000&LED35%3A=%23000000&Save=true HTTP/1.1,#ffff80,#ffff00,#ff80c0,#ff80ff,#ff00ff,#ff0080,#8000ff,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#800040,#000000,#000000,#000000,#000000,#000000
-
+  //#%3A=%23ffff80&LED2%3A=%23ffff00&LED3%3A=%23ff80c0&LED4%3A=%23ff80ff&LED5%3A=%23ff00ff&LED6%3A=%23ff0080&LED7%3A=%238000ff&LED8%3A=%23000000&3000000&LED9%3A=%2LED10%3A=%23000000&LED11%3A=%23000000&LED12%3A=%23000000&LED13%3A=%23000000&LED14%3A=%23000000&LED15%3A=%23000000&LED16%3A=%23000000&LED17%3A=%23000000&LED18%3A=%23000000&LED19%3A=%23000000&LED20%3A=%23000000&LED21%3A=%23000000&LED22%3A=%23000000&LED23%3A=%23000000&LED24%3A=%23000000&LED25%3A=%23000000&LED26%3A=%23000000&LED27%3A=%23000000&LED28%3A=%23000000&LED29%3A=%23000000&LED30%3A=%23800040&LED31%3A=%23000000&LED32%3A=%23000000&LED33%3A=%23000000&LED34%3A=%23000000&LED35%3A=%23000000&Save=true HTTP/1.1,#ffff80,#ffff00,#ff80c0,#ff80ff,#ff00ff,#ff0080,#8000ff,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#800040,#000000,#000000,#000000,#000000,#000000
 
   preferences.putInt("wfBtMode", 0);
 
@@ -412,7 +748,9 @@ void btSGet(){
 
   Serial.print("button value: ");
   Serial.println(digitalRead(Button));
-  
+
+  oledOn();
+
   int rc;
 
   rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
@@ -422,22 +760,47 @@ void btSGet(){
     oledSetBackBuffer(&ssoled, ucBackBuffer);
   }
 
-  unsigned long t_end_check_4;
+  // unsigned long t_end_check_4;
 
   delay(100);
 
-  Serial.println("Starting Arduino BLE Client application...");
-  BLEDevice::init("");
+  unsigned long t_end_check_4;
 
-  // Retrieve a Scanner and set the callback we want to use to be informed when we
-  // have detected a new device.  Specify that we want active scanning and start the
-  // scan to run for 5 seconds.
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setInterval(1349);
-  pBLEScan->setWindow(449);
-  pBLEScan->setActiveScan(true);
-  pBLEScan->start(5, false);
+  unsigned long timing;
+  timing = millis(); 
+
+  while(millis() - timing < 3000){
+    while (digitalRead(Button) == HIGH) { 
+      t_end_check_4 = millis();
+    }
+
+    while (millis() - t_end_check_4 < 100) {
+      if (digitalRead(Button) == LOW) {
+        Serial.println("short button press in btGet() setup");
+        //btStop();
+        preferences.putInt("wfBtMode", 1);
+        delay(10);
+        //ESP.restart();
+        WiFiConfig();
+      }
+    }
+  }
+
+  Serial.println("ESPNow/Basic/Slave Example");
+  //Set device in AP mode to begin with
+  WiFi.mode(WIFI_AP);
+  // configure device AP mode
+  configDeviceAP();
+  // This is the mac address of the Slave in AP Mode
+  Serial.print("AP MAC: "); Serial.println(WiFi.softAPmacAddress());
+  // Init ESPNow with a fallback logic
+  InitESPNow();
+  // Once ESPNow is successfully Init, we will register for recv CB to
+  // get recv packer info.
+  esp_now_register_recv_cb(OnDataRecv);
+
+  unsigned long millisTimeout;
+  millisTimeout = millis();
 
   while(1){
     while (digitalRead(Button) == HIGH) { 
@@ -447,47 +810,32 @@ void btSGet(){
     while (millis() - t_end_check_4 < 100) {
       if (digitalRead(Button) == LOW) {
         Serial.println("short button press in btGet() setup");
-        btStop();
+        //btStop();
         preferences.putInt("wfBtMode", 1);
-        delay(50);
-        ESP.restart();
+        delay(10);
+        //ESP.restart();
         WiFiConfig();
       }
     }
-
-      if (doConnect == true) {
-        if (connectToServer()) {
-          Serial.println("We are now connected to the BLE Server.");
-        } else {
-          Serial.println("We have failed to connect to the server; there is nothin more we will do.");
-        }
-        doConnect = false;
-      }
-
-      // If we are connected to a peer BLE Server, update the characteristic each time we are reached
-      // with the current time since boot.
-      if (connected) {
-        String newValue = "Time since boot: " + String(millis()/1000);
-        Serial.println("Setting new characteristic value to \"" + newValue + "\"");
-        
-        // Set the characteristic's value to be the array of bytes that is actually a string.
-        pRemoteCharacteristic->writeValue(newValue.c_str(), newValue.length());
-      }else if(doScan){
-        BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect, most likely there is better way to do it in arduino
-      }
-
+    if(millis() - millisTimeout >= 30000){
+      Serial.println("timeout in btSent(), board will reset now");
+      delay(10);
+      ESP.restart();
+    }
   }
 }
 
 
 void btSent(){
 
-    Serial.print("button value: ");
+  Serial.print("button value: ");
   Serial.println(digitalRead(Button));
 
   // wfBtMode = 2;
 
   preferences.putInt("wfBtMode", 0);
+
+  //oledOn();
   
   Serial.println("Starting OLED...");
   
@@ -501,105 +849,112 @@ void btSent(){
     oledSetBackBuffer(&ssoled, ucBackBuffer);
   }
 
+  delay(100);
+  
   unsigned long t_end_check_3;
 
-  delay(100);
+  unsigned long timing7;
+  timing7 = millis(); 
 
-
-  BLEDevice::init("ESP32");
-
-  // Create the BLE Server
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  // Create the BLE Service
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-
-  // Create a BLE Characteristic
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ   |
-                      BLECharacteristic::PROPERTY_WRITE  |
-                      BLECharacteristic::PROPERTY_NOTIFY |
-                      BLECharacteristic::PROPERTY_INDICATE
-                    );
-
-  pCharacteristic->addDescriptor(new BLE2902());
-
-  // Start the service
-  pService->start();
-
-  // Start advertising
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0);  // set value to 0x00 to not advertise this parameter
-  BLEDevice::startAdvertising();
-  Serial.println("Waiting a client connection to notify...");
-
-
-  while(1){
-
+  while(millis() - timing7 < 3000){
     while (digitalRead(Button) == HIGH) { 
       t_end_check_3 = millis();
     }
 
     while (millis() - t_end_check_3 < 100) {
       if (digitalRead(Button) == LOW) {
-        Serial.println("short button press in btSent() setup");
-        preferences.putInt("wfBtMode", 3);
-        delay(100);
-        ESP.restart();
+        Serial.println("short button press in btGet() setup");
+        //btStop();
+        preferences.putInt("wfBtMode", 1);
+        delay(10);
+        //ESP.restart();
         btSGet();
       }
-
-          // notify changed value
-    if (deviceConnected) {
-        pCharacteristic->setValue("1327568a1327568areht");
-        pCharacteristic->notify();
-        value++;
-        delay(1000); // bluetooth stack will go into congestion, if too many packets are sent, in 6 hours test i was able to go as low as 3ms
     }
-    // disconnecting
-    if (!deviceConnected && oldDeviceConnected) {
-        delay(500); // give the bluetooth stack the chance to get things ready
-        pServer->startAdvertising(); // restart advertising
-        Serial.println("start advertising");
-        oldDeviceConnected = deviceConnected;
-    }
-    // connecting
-    if (deviceConnected && !oldDeviceConnected) {
-        // do stuff here on connecting
-        oldDeviceConnected = deviceConnected;
-    }
-
-    }
-    delay(50);
-
-    if (deviceConnected) {
-    // Fabricate some arbitrary junk for now...
-    txValue = analogRead(readPin) / 3.456; // This could be an actual sensor reading!
-    // Let's convert the value to a char array:
-    char txString[8]; // make sure this is big enuffz
-    dtostrf(txValue, 1, 2, txString); // float_val, min_width, digits_after_decimal, char_buffer
-    
-//    pCharacteristic->setValue(&txValue, 1); // To send the integer value
-//    pCharacteristic->setValue("Hello!"); // Sending a test message
-    pCharacteristic->setValue(txString);
-    
-    pCharacteristic->notify(); // Send the value to the app!
-    Serial.print("*** Sent Value: ");
-    Serial.print(txString);
-    Serial.println(" ***");
   }
-    
+
+  //unsigned long t_end_check_3;
+
+  
+
+  WiFi.mode(WIFI_STA);
+  Serial.println("ESPNow/Basic/Master Example");
+  // This is the mac address of the Master in Station Mode
+  Serial.print("STA MAC: "); Serial.println(WiFi.macAddress());
+  // Init ESPNow with a fallback logic
+  InitESPNow();
+  // Once ESPNow is successfully Init, we will register for Send CB to
+  // get the status of Trasnmitted packet
+  esp_now_register_send_cb(OnDataSent);
+
+  unsigned long timing;
+  unsigned long timing2;
+  unsigned long millisTimeout;
+  timing = millis();
+  timing2 = millis(); 
+  millisTimeout = millis();
+ 
+
+  while(1){
+
+    //while(millis() - timing2 < 300){
+      while (digitalRead(Button) == HIGH) { 
+        t_end_check_3 = millis();
+      }
+
+      while (millis() - t_end_check_3 < 100) {
+        if (digitalRead(Button) == LOW) {
+          Serial.println("short button press in btSent() setup");
+          preferences.putInt("wfBtMode", 3);
+          delay(100);
+          //ESP.restart();
+          btSGet();
+        }
+      }
+    //}
+
+      if(millis() - millisTimeout >= 30000){
+        Serial.println("timeout in btSent(), board will reset now");
+        delay(10);
+        ESP.restart();
+      }
+
+    //if (millis() - timing > 3000){
+
+      ScanForSlave();
+      // If Slave is found, it would be populate in `slave` variable
+      // We will check if `slave` is defined and then we proceed further
+      if (slave.channel == CHANNEL) { // check if slave channel is defined
+        // `slave` is defined
+        // Add slave as peer if it has not been added already
+        bool isPaired = manageSlave();
+        if (isPaired) {
+          // pair success or already paired
+          // Send data to device
+          sendData();
+          millisTimeout = millis();
+        } else {
+          // slave pair failed
+          Serial.println("Slave pair failed!");
+        }
+      }
+      else {
+        // No slave found to process
+      }
+
+      // wait for 3seconds to run the logic again
+      //delay(3000);
+    //}
+
+    //timing2 = millis(); 
+  
   }
 }
 
 
 void WiFiConfig() {
 
-    Serial.print("button value: ");
+  Serial.print("button value: ");
   Serial.println(digitalRead(Button));
 
   preferences.putInt("wfBtMode", 0);
@@ -610,17 +965,19 @@ void WiFiConfig() {
 
   // delay(100);
 
-    Serial.println("Starting OLED...");
-    
-    int rc;
+  Serial.println("Starting OLED...");
 
-    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-    if (rc != OLED_NOT_FOUND){
-      oledFill(&ssoled, 0, 1);
-      oledWriteString(&ssoled, 0,6,1,(char*) "WIFI", FONT_LARGE, 0, 1);
-      oledSetBackBuffer(&ssoled, ucBackBuffer);
-      delay(100);
-    }
+  oledOn();
+  
+  int rc;
+
+  rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+  if (rc != OLED_NOT_FOUND){
+    oledFill(&ssoled, 0, 1);
+    oledWriteString(&ssoled, 0,6,1,(char*) "WIFI", FONT_LARGE, 0, 1);
+    oledSetBackBuffer(&ssoled, ucBackBuffer);
+    delay(100);
+  }
 
   unsigned long t_end_check_2;
   
@@ -647,17 +1004,17 @@ void WiFiConfig() {
   
   while (true) {
 
-  while (digitalRead(Button) == HIGH) { 
-    t_end_check_2 = millis();
-  }
-
-  while (millis() - t_end_check_2 < 100) {
-    if (digitalRead(Button) == LOW) {
-      WiFi.mode(WIFI_OFF);
-      Serial.println("short button press in WiFi setup");
-      btSent();
+    while (digitalRead(Button) == HIGH) { 
+      t_end_check_2 = millis();
     }
-  }
+
+    while (millis() - t_end_check_2 < 100) {
+      if (digitalRead(Button) == LOW) {
+        //WiFi.mode(WIFI_OFF);
+        Serial.println("short button press in WiFi setup");
+        btSent();
+      }
+    }
 
     //LEDcount = preferences.getInt("LEDcount", LEDcount);
     dnsServer.processNextRequest();
@@ -796,7 +1153,7 @@ void WiFiConfig() {
 
                 if (currentLine.indexOf("Save") != -1) {
                   String newColours = "";
-                  for (int i = 0; i < LEDcount + 1; i++) {
+                  for (int i = 1; i < LEDcount + 1; i++) {
                     int counterIncresedByOne = i + 1;
                     String buff1 = "LED" + String(i) + "%3A=%23";
                     String buff2 = "&LED" + String(counterIncresedByOne) + "%3A=%23";
@@ -811,42 +1168,62 @@ void WiFiConfig() {
                   Serial.println(newColours);
 
                   if (modeNumber == 11) {
+                    preferences.putString("mode11", mode00);
+                    delay(3);
                     preferences.putString("mode11", newColours);
                     mode11 = newColours;
                   }
                   if (modeNumber == 12) {
+                    preferences.putString("mode12", mode00);
+                    delay(3);
                     preferences.putString("mode12", newColours);
                     mode12 = newColours;
                   }
                   if (modeNumber == 13) {
+                    preferences.putString("mode13", mode00);
+                    delay(3);
                     preferences.putString("mode13", newColours);
                     mode13 = newColours;
                   }
                   if (modeNumber == 14) {
+                    preferences.putString("mode14", mode00);
+                    delay(3);
                     preferences.putString("mode14", newColours);
                     mode14 = newColours;
                   }
                   if (modeNumber == 15) {
+                    preferences.putString("mode15", mode00);
+                    delay(3);
                     preferences.putString("mode15", newColours);
                     mode15 = newColours;
                   }
                   if (modeNumber == 16) {
+                    preferences.putString("mode16", mode00);
+                    delay(3);
                     preferences.putString("mode16", newColours);
                     mode16 = newColours;
                   }
                   if (modeNumber == 17) {
+                    preferences.putString("mode17", mode00);
+                    delay(3);
                     preferences.putString("mode17", newColours);
                     mode17 = newColours;
                   }
                   if (modeNumber == 18) {
+                    preferences.putString("mode18", mode00);
+                    delay(3);
                     preferences.putString("mode18", newColours);
                     mode18 = newColours;
                   }
                   if (modeNumber == 19) {
+                    preferences.putString("mode19", mode00);
+                    delay(3);
                     preferences.putString("mode19", newColours);
                     mode19 = newColours;
                   }
                   if (modeNumber == 20) {
+                    preferences.putString("mode20", mode00);
+                    delay(3);
                     preferences.putString("mode20", newColours);
                     mode20 = newColours;
                   }
@@ -1001,7 +1378,7 @@ void showModeFromString(String buff) {
     Serial.print("Blue:");
     Serial.println(b);
 
-    ledShow(i, r, g, b);
+    ledShow(i, g, r, b);
 
     if(r == 0 || g == 0 || b == 0){
       colorVal = 1;
@@ -1126,6 +1503,18 @@ void ShowColours(int mode_light) {
 void setup() {
 
   preferences.begin("settings", false);
+
+  
+  mode11 = preferences.getString("mode11", "");
+  mode12 = preferences.getString("mode12", "");
+  mode13 = preferences.getString("mode13", "");
+  mode14 = preferences.getString("mode14", "");
+  mode15 = preferences.getString("mode15", "");
+  mode16 = preferences.getString("mode16", "");
+  mode17 = preferences.getString("mode17", "");
+  mode18 = preferences.getString("mode18", "");
+  mode19 = preferences.getString("mode19", "");
+  mode20 = preferences.getString("mode20", "");
 
   pinMode(Button, INPUT);
   
@@ -1343,17 +1732,6 @@ void setup() {
   
   //esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-  mode11 = preferences.getString("mode11", "");
-  mode12 = preferences.getString("mode12", "");
-  mode13 = preferences.getString("mode13", "");
-  mode14 = preferences.getString("mode14", "");
-  mode15 = preferences.getString("mode15", "");
-  mode16 = preferences.getString("mode16", "");
-  mode17 = preferences.getString("mode17", "");
-  mode18 = preferences.getString("mode18", "");
-  mode19 = preferences.getString("mode19", "");
-  mode20 = preferences.getString("mode20", "");
-
   
   if (preferences.getString("wifi_name", "") == "") {
     Serial.println("custom WiFi name not stored, so write default value");
@@ -1524,6 +1902,25 @@ void setup() {
     WiFiConfig();
   }
   else if (deviceAction == 3) {
+
+    oledOn();
+
+    Serial.println("Starting OLED...");
+    
+    int rc;
+
+    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+    if (rc != OLED_NOT_FOUND){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,0,1,(char*) "reset", FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+      turnOnLED();
+      delay(1000);
+      oledOff();
+      turnOffLED();
+      //delay(500);
+    } 
+    
     preferences.putString("wifi_name", "LED_Jeans_by_519Obsessions");
     preferences.putString("wifi_pass", ""); 
     delay(10);
@@ -1543,6 +1940,7 @@ void setup() {
   esp_deep_sleep_start();
   
 }
+
 
 void loop() {
 }
