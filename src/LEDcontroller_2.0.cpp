@@ -57,20 +57,16 @@ int max_bright = 11;
 int val;
 //int resetCount;
 bool chargPin;
-int colorVal;
+RTC_DATA_ATTR int colorVal;
 
 CRGB leds[NUM_LEDS];
 
-int wfBtMode;
 int pageNum = 1;
-int clientCounter;
+int clientCounter, callbackFailCount, wfBtMode, pageCount, ledCount3, step1, chargLed;
 int LEDcount = 35;
-int pageCount;
-int ledCount3;
-int step1;
 int ledArr[35][3];
 
-String WiFiName = "LED_Jeans_by_519Obsessions";
+String WiFiName = "";
 String WiFiPass = "";
 
 RTC_DATA_ATTR int modeNumber = 0;
@@ -175,10 +171,42 @@ int getBatteryState() {
 }
 
 
+int getBatteryStateWhileCharging() {
+  pinMode(BatteryVoltagePower, OUTPUT);
+  gpio_hold_dis(BatteryVoltagePower);
+  digitalWrite(BatteryVoltagePower, HIGH);
+  pinMode(BatteryVoltage, INPUT);
+  delay(100);
+  
+  int batteryVoltage;
+  
+  for (int i = 0; i < 10; i++ ) {
+    Serial.println(analogRead(BatteryVoltage));
+    batteryVoltage += analogRead(BatteryVoltage);
+    delay(10);
+  }
+  
+  batteryVoltage /= 10;
+  batteryVoltage = map(batteryVoltage, 1740.0f, 2375.0f, 0, 100);
+
+  if(batteryVoltage > 100){
+    batteryVoltage = 100;
+  }else if(batteryVoltage < 0){
+    batteryVoltage = 0;
+  }
+
+  Serial.print("BatteryCharge(%): ");
+  Serial.println(batteryVoltage);
+  digitalWrite(BatteryVoltagePower, LOW);
+  gpio_hold_en(BatteryVoltagePower);
+  return (batteryVoltage);
+}
+
+
 void rebuildEditPage(String modeRAW) {
   htmlEditContent = "";
   
-  for (int i = 0; i < LEDcount + 1; i++) {
+  for (int i = 0; i < LEDcount; i++) {
     String colour = "";
     if (modeRAW.indexOf(",") != -1) {
       colour = modeRAW.substring(0, modeRAW.indexOf(","));
@@ -344,7 +372,7 @@ void ScanForSlave() {
       //}
       delay(10);
       // Check if the current device starts with `Slave`
-      if (SSID.indexOf("Slave") == 0) {
+      if (SSID.indexOf("PoClab") == 0) {
         // SSID of interest
         Serial.println("Found a Slave.");
         Serial.print(i + 1); Serial.print(": "); Serial.print(SSID); Serial.print(" ["); Serial.print(BSSIDstr); Serial.print("]"); Serial.print(" ("); Serial.print(RSSI); Serial.print(")"); Serial.println("");
@@ -453,19 +481,15 @@ void sendData() {
   char sendMode[952];
   esp_err_t result;
 
-  for(int ii = 0; ii < 10; ii++){
+  for(int ii = 0; ii <= 10; ii++){
     if(ii == 0){
       oledOn();
       int rc;
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
-      }
-      resetCounter += 1;
-      if(resetCounter == 2){
-        ESP.restart();
       }
       mode11.toCharArray(sendMode, 952);
     }else if(ii == 1){
@@ -477,7 +501,7 @@ void sendData() {
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
       }
       mode13.toCharArray(sendMode, 952);
@@ -490,7 +514,7 @@ void sendData() {
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
       }
       mode15.toCharArray(sendMode, 952);
@@ -503,7 +527,7 @@ void sendData() {
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
       }
       mode17.toCharArray(sendMode, 952);
@@ -516,13 +540,29 @@ void sendData() {
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
       }
       mode19.toCharArray(sendMode, 952);
     }else if(ii == 9){
       oledOff();
       mode20.toCharArray(sendMode, 952);
+    }else if(ii == 10){
+    delay(40);
+    oledOn();
+    delay(40);
+    int rc;
+
+    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+    if (rc != OLED_NOT_FOUND){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,3,1,(char*) "DONE", FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+      delay(2500);
+    }
+    oledOff();
+    delay(10);
+    ESP.restart();
     }
     
     const uint8_t *peer_addr = slave.peer_addr;
@@ -569,8 +609,8 @@ delay(3);
 int iii;
 
 void configDeviceAP() {
-  const char *SSID = "Slave_1";
-  bool result = WiFi.softAP(SSID, "Slave_1_Password", CHANNEL_2, 0);
+  const char *SSID = "PoClab";
+  bool result = WiFi.softAP(SSID, "PoClab_Password", CHANNEL_2, 0);
   if (!result) {
     Serial.println("AP Config failed.");
   } else {
@@ -595,7 +635,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
         rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
         if (rc != OLED_NOT_FOUND){
           oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
           oledSetBackBuffer(&ssoled, ucBackBuffer);
         }
       }
@@ -620,7 +660,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
         rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
         if (rc != OLED_NOT_FOUND){
           oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
           oledSetBackBuffer(&ssoled, ucBackBuffer);
         }
       }
@@ -645,7 +685,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
         rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
         if (rc != OLED_NOT_FOUND){
           oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
           oledSetBackBuffer(&ssoled, ucBackBuffer);
         }
       }
@@ -670,7 +710,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
         rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
         if (rc != OLED_NOT_FOUND){
           oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
           oledSetBackBuffer(&ssoled, ucBackBuffer);
         }
       }
@@ -695,7 +735,7 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
         rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
         if (rc != OLED_NOT_FOUND){
           oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,0,1,(char*) "SYNC...", FONT_LARGE, 0, 1);
+          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
           oledSetBackBuffer(&ssoled, ucBackBuffer);
         }
       }
@@ -718,6 +758,17 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
     iii+=1;
 
     if(iii == 50){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "DONE", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+        delay(2500);
+      }
+      oledOff();
+      delay(10);
       ESP.restart();
     }
 
@@ -732,9 +783,18 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
   Serial.print("Last Packet Sent to: "); Serial.println(macStr);
-  Serial.print("Last Packet Send Status: ");  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  Serial.print("Last Packet Send Status: ");  
+  //Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
  
-  //status == ESP_NOW_SEND_SUCCESS ?  : );
+  if(status == ESP_NOW_SEND_SUCCESS){
+    Serial.println("Delivery Success");
+  }else{
+    Serial.println("Delivery Fail");
+    callbackFailCount += 1;
+    preferences.putInt("wfBtMode", 2);
+    delay(50);
+    ESP.restart();
+  }
 }
 
 
@@ -750,6 +810,8 @@ void btSGet(){
   Serial.println(digitalRead(Button));
 
   oledOn();
+
+  delay(60);
 
   int rc;
 
@@ -780,14 +842,12 @@ void btSGet(){
         //btStop();
         preferences.putInt("wfBtMode", 1);
         delay(10);
-        //ESP.restart();
+        ESP.restart();
         WiFiConfig();
       }
     }
   }
 
-  Serial.println("ESPNow/Basic/Slave Example");
-  //Set device in AP mode to begin with
   WiFi.mode(WIFI_AP);
   // configure device AP mode
   configDeviceAP();
@@ -817,7 +877,7 @@ void btSGet(){
         WiFiConfig();
       }
     }
-    if(millis() - millisTimeout >= 30000){
+    if(millis() - millisTimeout >= 60000){
       Serial.println("timeout in btSent(), board will reset now");
       delay(10);
       ESP.restart();
@@ -838,6 +898,10 @@ void btSent(){
   //oledOn();
   
   Serial.println("Starting OLED...");
+
+  oledOn();
+
+  delay(60);
   
   int rc;
 
@@ -854,7 +918,7 @@ void btSent(){
   unsigned long t_end_check_3;
 
   unsigned long timing7;
-  timing7 = millis(); 
+  timing7 = millis();
 
   while(millis() - timing7 < 3000){
     while (digitalRead(Button) == HIGH) { 
@@ -865,7 +929,7 @@ void btSent(){
       if (digitalRead(Button) == LOW) {
         Serial.println("short button press in btGet() setup");
         //btStop();
-        preferences.putInt("wfBtMode", 1);
+        preferences.putInt("wfBtMode", 3);
         delay(10);
         //ESP.restart();
         btSGet();
@@ -913,7 +977,7 @@ void btSent(){
       }
     //}
 
-      if(millis() - millisTimeout >= 30000){
+      if(millis() - millisTimeout >= 60000){
         Serial.println("timeout in btSent(), board will reset now");
         delay(10);
         ESP.restart();
@@ -957,6 +1021,10 @@ void WiFiConfig() {
   Serial.print("button value: ");
   Serial.println(digitalRead(Button));
 
+  int wifiModeTrue = 0;
+
+  unsigned long wifiOffTimer;
+
   preferences.putInt("wfBtMode", 0);
 
   //preferences.putInt("wfBtMode", 1);
@@ -968,6 +1036,8 @@ void WiFiConfig() {
   Serial.println("Starting OLED...");
 
   oledOn();
+
+  delay(60);
   
   int rc;
 
@@ -979,7 +1049,12 @@ void WiFiConfig() {
     delay(100);
   }
 
+  //delay(50);
+
   unsigned long t_end_check_2;
+
+  WiFiName = preferences.getString("wifi_name", "");
+  WiFiPass = preferences.getString("wifi_pass", "");
   
   Serial.println("WiFi config starting...");
   WiFi.mode(WIFI_AP);
@@ -990,9 +1065,14 @@ void WiFiConfig() {
   else {
     WiFi.softAP(WiFiName.c_str(), WiFiPass.c_str());
   }
+
+  delay(10);
+
   while(!(WiFi.softAPIP()== apIP)){
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));    
   }
+
+  delay(10);
 
   //Serial.println(WiFi.softAP(WiFiName.c_str()) ? "soft-AP setup": "Failed to connect");
 
@@ -1016,6 +1096,8 @@ void WiFiConfig() {
       }
     }
 
+    delay(10);
+
     //LEDcount = preferences.getInt("LEDcount", LEDcount);
     dnsServer.processNextRequest();
     WiFiClient client = server.available(); 
@@ -1034,10 +1116,11 @@ void WiFiConfig() {
               client.println("Content-type:text/html");
               client.println();
               if (pageNum == 1) {
+                wifiModeTrue = 1;
                 String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
                   + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/"> <tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr><tr> <td><strong><em>Device settings:</em></strong></td></tr><tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
-                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):</td><td><input type="text" id="devpass" name="devpass" value=")rawText"
-                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip:</td><td><input type="number" id="ledcount" name="ledcount" value=")rawText"
+                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
+                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
                   + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
 
                 client.print(htmlMain);
@@ -1127,10 +1210,26 @@ void WiFiConfig() {
 
                   LEDcount = (currentLine.substring(currentLine.indexOf("&ledcount=") + 10, currentLine.indexOf("&Save="))).toInt(); //get LEDcount from substring
                   Serial.print("LEDcount:");
+                  delay(5);
+                  if(LEDcount > 35){
+                    LEDcount = 35;
+                  }
+                  delay(5);
                   Serial.println(LEDcount);
 
+                  if(WiFiPass && (strlen(WiFiPass.c_str()) > 0 && strlen(WiFiPass.c_str()) < 8)) {
+                    // fail passphrase too short
+                    //log_e("passphrase too short!");
+                    //return false;
+                    preferences.putString("wifi_pass", "");
+                    Serial.println("Wifi password is too short");
+                  }else{
+                    Serial.println("Wifi pass is saved");
+                    preferences.putString("wifi_pass", WiFiPass);
+                  }
+
                   preferences.putString("wifi_name", WiFiName);
-                  preferences.putString("wifi_pass", WiFiPass);
+                  
                   preferences.putInt("LEDcount", LEDcount);
 
                   break;
@@ -1142,8 +1241,8 @@ void WiFiConfig() {
                   client.println();
                   String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
                   + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/"> <tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr><tr> <td><strong><em>Device settings:</em></strong></td></tr><tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
-                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):</td><td><input type="text" id="devpass" name="devpass" value=")rawText"
-                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip:</td><td><input type="number" id="ledcount" name="ledcount" value=")rawText"
+                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
+                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
                   + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
 
                   client.print(htmlMain);
@@ -1246,8 +1345,8 @@ void WiFiConfig() {
                   client.println();
                   String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
                   + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/"> <tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr><tr> <td><strong><em>Device settings:</em></strong></td></tr><tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
-                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):</td><td><input type="text" id="devpass" name="devpass" value=")rawText"
-                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip:</td><td><input type="number" id="ledcount" name="ledcount" value=")rawText"
+                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
+                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
                   + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
 
                   client.print(htmlMain);
@@ -1268,24 +1367,31 @@ void WiFiConfig() {
               // delay(10);
               // Serial.println(millis() - t_start_check_web);
             }
-
-            if (millis() - t_start_check_web > 300000) {
-              //if (millis() - t_start_check_web > 60000) {
-                client.print(htmlExitConfirm);
-                Serial.println("Exit from WiFi config mode");
-                Serial.println("ESP restart in 1 second");
-                oledOff();
-                delay(1000);
-                client.stop();
-                ESP.restart();
-            }
-
           } else if (c != '\r') {
             currentLine += c;
           }
         }
+        wifiOffTimer = millis(); 
       }
       client.stop();
+    }
+
+    if (millis() - t_start_check_web > 180000) {
+    //if (millis() - t_start_check_web > 60000) {
+      client.print(htmlExitConfirm);
+      Serial.println("Exit from WiFi config mode");
+      Serial.println("ESP restart in 1 second");
+      oledOff();
+      delay(1000);
+      client.stop();
+      ESP.restart();
+    }
+
+    if (millis() - wifiOffTimer > 9000 && wifiModeTrue == 1){ 
+      Serial.println ("1 second timeout, gping to restart");
+      preferences.putInt("wfBtMode", 1);
+      delay(10);
+      ESP.restart();
     }
   }
 }
@@ -1329,26 +1435,28 @@ void sendModeFromString(String buff) {
 
     //ledShow(i, r, g, b);
 
-    if(r == 0 || g == 0 || b == 0){
-      colorVal = 1;
-    }
+    // if(r == 0 || g == 0 || b == 0){
+    //   colorVal = 1;
+    // }
   }
-  if(colorVal == 0){
-    //turnOffLED();
-  }
+  // if(colorVal == 0){
+  //   //turnOffLED();
+  // }
 }
 
 
 void showModeFromString(String buff) {  
+
+  colorVal = 0;
   
   turnOnLED();
-  delay(100);
+  delay(10);
   
-  Serial.println("String to parse");
-  Serial.println(buff);
+  // Serial.println("String to parse");
+  // Serial.println(buff);
   buff.replace(",", ""); 
-  Serial.println("String after removing comma symbol");
-  Serial.println(buff);
+  // Serial.println("String after removing comma symbol");
+  // Serial.println(buff);
 
   for (int i = 0; i < LEDcount; i++) {
     
@@ -1358,34 +1466,38 @@ void showModeFromString(String buff) {
     }
 
     String hexString = buff.substring(1, buff.indexOf("#", 1)).c_str(); //char* hex="#6f56a3";
-    Serial.print("Colour hexString:");
-    Serial.println(hexString);
+    // Serial.print("Colour hexString:");
+    // Serial.println(hexString);
 
     buff = buff.substring(buff.indexOf("#", 1));
-    Serial.print("Rest of the String:");
-    Serial.println(buff);
+    // Serial.print("Rest of the String:");
+    // Serial.println(buff);
 
     long number = strtol( &hexString[0], NULL, 16);
     long r = number >> 16;
     long g = number >> 8 & 0xFF;
     long b = number & 0xFF;
 
-    Serial.println("Parsed colours: ");
-    Serial.print("Red:");
-    Serial.println(r);
-    Serial.print("Green:");
-    Serial.println(g);
-    Serial.print("Blue:");
-    Serial.println(b);
+    // Serial.println("Parsed colours: ");
+    // Serial.print("Red:");
+    // Serial.println(r);
+    // Serial.print("Green:");
+    // Serial.println(g);
+    // Serial.print("Blue:");
+    // Serial.println(b);
 
     ledShow(i, g, r, b);
 
-    if(r == 0 || g == 0 || b == 0){
+    if(r != 0 || g != 0 || b != 0){
       colorVal = 1;
+
+      esp_sleep_enable_timer_wakeup(6000000);
+
     }
   }
   if(colorVal == 0){
     turnOffLED();
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
   }
 }
 
@@ -1433,33 +1545,43 @@ void ShowColours(int mode_light) {
         ledShow(i+ledCount3+ledCount3+ledCount3, 0, 0, 255);
       }
     }
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 2) {
     one_color_all(0, 0, 255); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 3) {
     one_color_all(0, 200, 255); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 4) {
     one_color_all(0, 255, 200); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 5) {
     one_color_all(0, 255, 0); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 6) {
     one_color_all(140, 255, 0); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 7) {
     one_color_all(255, 255, 0); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 8) {
     one_color_all(255, 0, 0); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 9) {
     one_color_all(224, 130, 250); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
   else if (mode_light == 10) {
     one_color_all(255, 255, 255); 
+    esp_sleep_enable_timer_wakeup(6000000);
   }
 
   else if (mode_light == 11) {
@@ -1500,11 +1622,27 @@ void ShowColours(int mode_light) {
 }
 
 
+int print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); return 1; break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); return 2; break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); return 3; break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); return 0; break;
+  }
+}
+
+
 void setup() {
 
   preferences.begin("settings", false);
 
-  
   mode11 = preferences.getString("mode11", "");
   mode12 = preferences.getString("mode12", "");
   mode13 = preferences.getString("mode13", "");
@@ -1515,10 +1653,36 @@ void setup() {
   mode18 = preferences.getString("mode18", "");
   mode19 = preferences.getString("mode19", "");
   mode20 = preferences.getString("mode20", "");
+  WiFiName = preferences.getString("wifi_name", "");
+  //preferences.putInt("ledMode", 0);
 
   pinMode(Button, INPUT);
   
   Serial.begin(115200);
+
+  if(print_wakeup_reason() == 3){
+    if(getBatteryState() <= 5 && colorVal != 0){
+
+      turnOffLED();
+      oledOn();
+
+      int rc;
+
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,20,1,(char*) "0%", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+        delay(2000);
+      }
+      esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
+      esp_deep_sleep_start();
+    }else{
+      esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
+      esp_sleep_enable_timer_wakeup(6000000);
+      esp_deep_sleep_start();
+    }
+  }
 
   Serial.println(preferences.getString("mode11", ""));
 
@@ -1587,64 +1751,18 @@ void setup() {
     }
   }
 
-  
-
-  // Serial.print("bat level: ");
-  // Serial.println(getBatteryState());
-
-  // if(getBatteryState() <= 5){
-  //   //getBatteryState()
-  //   String chargingState = String(getBatteryState()) + "%";
-  //   oledOn();
-  //   Serial.println("Starting OLED...");
-    
-  //   int rc;
-
-  //   rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-  //   if (rc != OLED_NOT_FOUND){
-  //     oledFill(&ssoled, 0, 1);
-  //     oledWriteString(&ssoled, 0,20,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
-  //     oledSetBackBuffer(&ssoled, ucBackBuffer);
-  //   }
-  //   delay(600);
-  //   oledOff();
-  //   delay(600);
-  //   oledOn();
-  //   Serial.println("Starting OLED...");
-
-  //   rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-  //   if (rc != OLED_NOT_FOUND){
-  //     oledFill(&ssoled, 0, 1);
-  //     oledWriteString(&ssoled, 0,20,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
-  //     oledSetBackBuffer(&ssoled, ucBackBuffer);
-  //   }
-  //   delay(600);
-  //   oledOff();
-  //   delay(600);
-  //   oledOn();
-  //   Serial.println("Starting OLED...");
-
-  //   rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-  //   if (rc != OLED_NOT_FOUND){
-  //     oledFill(&ssoled, 0, 1);
-  //     oledWriteString(&ssoled, 0,20,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
-  //     oledSetBackBuffer(&ssoled, ucBackBuffer);
-  //   }
-  //   delay(600);
-  //   oledOff();
-  //   delay(600);
-
-  //   WiFi.mode(WIFI_OFF);
-  //   btStop(); 
-  //   delay(100);
-  //   esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
-  //   Serial.println("Going to sleep now");
-  //   esp_deep_sleep_start();
-  // }
-
   while((chargPin = digitalRead(13)) == HIGH){
 
-    if(getBatteryState() != bat2){
+    getBatteryStateWhileCharging();
+    delay(10);
+    getBatteryStateWhileCharging();
+    delay(10);
+    getBatteryStateWhileCharging();
+    delay(10);
+
+    int bat = getBatteryStateWhileCharging();
+
+    if(bat != bat2){
       val = 0;
     }
 
@@ -1653,29 +1771,41 @@ void setup() {
     Serial.print(bat2);
     Serial.print(", ");
 
-    bat2 = getBatteryState();
+    bat2 = bat;
 
     Serial.println(bat2);
     
     if(val == 0){
+      chargLed = 1;
       turnOffLED();
       delay(10);
       oledOn();
       Serial.println("Starting OLED...");
-      getBatteryState();
-      String chargingState = String(getBatteryState()) + "%";
+      String chargingState = String(bat) + "%";
   
       int rc;
       //int a = 1;
 //      String c = "xcvbnb";
       
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-      if (rc != OLED_NOT_FOUND){
+      if (rc != OLED_NOT_FOUND && bat < 10){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,10,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,20,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
-        delay(500);   
-        val += 1;   
+        delay(500);
+        val += 1; 
+      }else if (rc != OLED_NOT_FOUND && bat < 100){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,13,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+        delay(500);
+        val += 1; 
+      }if (rc != OLED_NOT_FOUND && bat == 100){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,5,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+        delay(500);
+        val += 1; 
       }
     }
     resetCount = 0;
@@ -1686,6 +1816,63 @@ void setup() {
     oledOff();
     val = 0;
     //resetCount = 0;
+  }
+
+
+  Serial.print("bat level: ");
+  Serial.println(getBatteryState());
+
+  if(getBatteryState() <= 5){
+    
+    Serial.print("Reset count value is: ");
+    Serial.println(resetCount);
+    resetCount = 1;
+
+    oledOn();
+    Serial.println("Starting OLED...");
+    
+    int rc;
+
+    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+    if (rc != OLED_NOT_FOUND){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,20,1,(char*) "0%", FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+    }
+    delay(600);
+    oledOff();
+    delay(600);
+    oledOn();
+    Serial.println("Starting OLED...");
+
+    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+    if (rc != OLED_NOT_FOUND){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,20,1,(char*) "0%", FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+    }
+    delay(600);
+    oledOff();
+    delay(600);
+    oledOn();
+    Serial.println("Starting OLED...");
+
+    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+    if (rc != OLED_NOT_FOUND){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,20,1,(char*) "0%", FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+    }
+    delay(600);
+    oledOff();
+    delay(600);
+
+    WiFi.mode(WIFI_OFF);
+    btStop(); 
+    delay(100);
+    esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
+    Serial.println("Going to sleep now");
+    esp_deep_sleep_start();
   }
 
   unsigned long t_start_check = millis();
@@ -1711,12 +1898,12 @@ void setup() {
     Serial.println("quick button press");
     deviceAction = 0;
     //resetCount = 1;
-  } else {
+  } else if(chargLed == 0){
     Serial.print("Reset count value is: ");
     Serial.println(resetCount);
     resetCount = 1;
     Serial.println("trash hold press, not counted");  
-    esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH); 
+    esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
     Serial.println("Going to sleep now");
     WiFi.mode(WIFI_OFF);
     btStop();
@@ -1733,15 +1920,19 @@ void setup() {
   //esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
   
-  if (preferences.getString("wifi_name", "") == "") {
-    Serial.println("custom WiFi name not stored, so write default value");
-    preferences.putString("wifi_name", WiFiName);
-  }
-  else {
-    WiFiName = preferences.getString("wifi_name", "");
-    Serial.print("WiFi name:");
-    Serial.println(WiFiName);
-  }
+  // if (preferences.getString("wifi_name", "") == "") {
+  //   Serial.println("^^^^^^^^^^^^^^ ");
+  //   Serial.println("custom WiFi name not stored, so write default value");
+  //   WiFiName = "LED_Jeans_by_519Obsessions";
+  //   preferences.putString("wifi_name", WiFiName);
+  //   Serial.println("wifi name is: LED_Jeans_by_519Obsessions");
+  // }
+  // else {
+  //   WiFiName = preferences.getString("wifi_name", "");
+  //   Serial.println("^^^^^^^^^^^^^^ ");
+  //   Serial.print("WiFi name:");
+  //   Serial.println(WiFiName);
+  // }
 
   if (preferences.getString("wifi_pass", "") == "") {
     Serial.println("custom WiFi pass not stored, so write default value");
@@ -1763,12 +1954,16 @@ void setup() {
     Serial.println(LEDcount);
   }
 
-  if (deviceAction == 0) {
+  if (deviceAction == 0 || chargLed != 0) {
 
+    if(chargLed != 0){
+      modeNumber--;
+    }
     modeNumber++;
-    if (modeNumber == 21) {
+    if(modeNumber == 21){
       modeNumber = 0;
     }
+    preferences.putInt("ledMode", modeNumber);
 
     char szTemp[32];
 
@@ -1784,36 +1979,97 @@ void setup() {
     Serial.println("Starting OLED...");
     
     int rc;
-  
-    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-    if (rc != OLED_NOT_FOUND && modeNumber <= 9){
-      oledFill(&ssoled, 0, 1);
-      oledWriteString(&ssoled, 0,30,1,(char*) szTemp, FONT_LARGE, 0, 1);
-      oledSetBackBuffer(&ssoled, ucBackBuffer);
-      delay(500);
-    }else if (rc != OLED_NOT_FOUND){
-      oledFill(&ssoled, 0, 1);
-      oledWriteString(&ssoled, 0,18,1,(char*) szTemp, FONT_LARGE, 0, 1);
-      oledSetBackBuffer(&ssoled, ucBackBuffer);
-      delay(500);
+    unsigned long checkButtonMillis;
+    unsigned long del;
+    unsigned long t_end_check_3;
+    int ledShowCount = 1;
+    del = millis();
+    checkButtonMillis = millis();
+
+   // delay(50);
+
+    while(millis() - checkButtonMillis < 700){
+
+      delay(50);
+      
+      while (digitalRead(Button) == HIGH) { 
+        t_end_check_3 = millis();
+      }
+
+      if (millis() - t_end_check_3 < 50) {
+        if (digitalRead(Button) == LOW) {
+
+          checkButtonMillis = millis();
+          del = millis();
+
+          Serial.println("short button press in led change mode setup");
+          delay(10);
+          modeNumber++;
+          if(modeNumber == 21){
+            modeNumber = 0;
+          }
+          preferences.putInt("ledMode", modeNumber);
+
+          sprintf(szTemp, "%d", (int)modeNumber);
+
+          turnOnLED();
+
+          Serial.print("Mode: ");
+          Serial.println(modeNumber);
+          ShowColours(modeNumber);
+          ledShowCount = 1;
+        }
+      }
+
+      if(ledShowCount == 1){
+        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+        if (rc != OLED_NOT_FOUND && modeNumber <= 9){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,30,1,(char*) szTemp, FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+          delay(50); ledShowCount = 0;
+        }else if (rc != OLED_NOT_FOUND){
+          oledFill(&ssoled, 0, 1);
+          oledWriteString(&ssoled, 0,18,1,(char*) szTemp, FONT_LARGE, 0, 1);
+          oledSetBackBuffer(&ssoled, ucBackBuffer);
+          delay(50); ledShowCount = 0;
+        }
+      }
+
+        if(millis() - del > 700){
+          oledOff();
+          ledShowCount = 0;
+        }
+      }
     }
-    oledOff();
-  }
    if (deviceAction == 1) {
     oledOn();
     Serial.println("Starting OLED...");
-    getBatteryState();
+    int bat = getBatteryState();
     String chargingState = String(getBatteryState()) + "%";
 
     int rc;
     //int a = 1;
     
     rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-    if (rc != OLED_NOT_FOUND){
+    if (rc != OLED_NOT_FOUND && bat < 10){
       oledFill(&ssoled, 0, 1);
-      oledWriteString(&ssoled, 0,10,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
+      oledWriteString(&ssoled, 0,20,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
       oledSetBackBuffer(&ssoled, ucBackBuffer);
-      delay(500);     
+      delay(500);
+      val += 1; 
+    }else if (rc != OLED_NOT_FOUND && bat < 100){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,13,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+      delay(500);
+      val += 1; 
+    }if (rc != OLED_NOT_FOUND && bat == 100){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,5,1,(char*) chargingState.c_str(), FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+      delay(500);
+      val += 1; 
     }
 
     delay(3000);
@@ -1882,19 +2138,6 @@ void setup() {
 
 
     oledOn();
-    // Serial.println("Starting OLED...");
-    
-    // int rc;
-
-    // rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-    // if (rc != OLED_NOT_FOUND){
-    //   oledFill(&ssoled, 0, 1);
-    //   oledWriteString(&ssoled, 0,6,1,(char*) "WIFI", FONT_LARGE, 0, 1);
-    //   oledSetBackBuffer(&ssoled, ucBackBuffer);
-    //   delay(1000);
-    //   //oledOff();
-    //   //delay(500);
-    // }
     turnOnLED();
     delay(100);
     turnOffLED();
