@@ -2,6 +2,12 @@
 
 #include <ss_oled.h>
 
+#define esp32SleepWakeupTimer 6000000
+#define getMillisTimeout 60000
+#define sentMillisTimeout 60000
+#define waitButtonModes 3000                          // Time what we wait in Sent, Get modes, to user press button to choose mode
+#define WiFiMillisTimeout 180000
+
 #define USE_BACKBUFFER
 static uint8_t ucBackBuffer[1024];
 
@@ -26,14 +32,12 @@ SSOLED ssoled;
 #define BUTTON_PIN_BITMASK 0x2010
 
 #define FASTLED_ALLOW_INTERRUPTS 0
-//#define FASTLED_INTERRUPT_RETRY_COUNT 50
 
 #include "FastLED.h"
 
 #define NUM_LEDS 35
 #define DATA_PIN 26
 #define DATA_PIN_HOLD GPIO_NUM_26
-
 
 #include <esp_now.h>
 
@@ -55,14 +59,13 @@ esp_now_peer_info_t slave;
 
 int max_bright = 11;
 int val;
-//int resetCount;
 bool chargPin;
 RTC_DATA_ATTR int colorVal;
 
 CRGB leds[NUM_LEDS];
 
 int pageNum = 1;
-int clientCounter, callbackFailCount, wfBtMode, pageCount, ledCount3, step1, chargLed;
+int clientCounter, resetCounter, callbackFailCount, wfBtMode, pageCount, ledCount3, step1, chargLed;
 int LEDcount = 35;
 int ledArr[35][3];
 
@@ -130,15 +133,13 @@ String htmlEditPart2 = R"rawText(</em></strong></td></tr><form action="/">)rawTe
 String htmlEditContent = "";
 String htmlEditPart3 = R"rawText(<tr><td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Back" value="true">Back</button></form></td></tr><tr><td>&copy; LED Jeans by 519Obsessions</td></tr></tbody></table></body></html>)rawText";
 
-String htmlSaveConfirm = R"rawText(<!DOCTYPE html><html> <head> </head> <body>)rawText"
-                         + style + R"rawText(Settings saved <form action="/"><button name="Back" value="true">Back to settings</button></form> <form action="/"><button name="Exit" value="true">Exit</button></form> </body></html>)rawText";
 String htmlExitConfirm = R"rawText(<!DOCTYPE html><html> <head> </head> <body>)rawText"
                          + style + R"rawText(WiFi config stopped. Device in standart operational mode  </body></html>)rawText";
 
 
 void WiFiConfig();
 
-
+// This function converts ADC value to battery voltage (in "%")
 int getBatteryState() {
   pinMode(BatteryVoltagePower, OUTPUT);
   gpio_hold_dis(BatteryVoltagePower);
@@ -170,7 +171,7 @@ int getBatteryState() {
   return (batteryVoltage);
 }
 
-
+// This function also converts ADC value to battery voltage (in "%"), but in different range, because of while battery charging, voltage value is bigger
 int getBatteryStateWhileCharging() {
   pinMode(BatteryVoltagePower, OUTPUT);
   gpio_hold_dis(BatteryVoltagePower);
@@ -202,7 +203,7 @@ int getBatteryStateWhileCharging() {
   return (batteryVoltage);
 }
 
-
+// Convert mode string to html page with mode colors that saved in memory
 void rebuildEditPage(String modeRAW) {
   htmlEditContent = "";
   
@@ -233,7 +234,7 @@ void rebuildEditPage(String modeRAW) {
   }
 }
 
-
+// Convert generated rainbow colors in color blocks for 1 mode
 void rebuildEditPage2(String modeRAW) {
   htmlEditContent = "";
 
@@ -263,22 +264,23 @@ void rebuildEditPage2(String modeRAW) {
 
     htmlEdit = htmlEditPart1 + " " + String(modeNumber) + htmlEditPart2 + htmlEditContent + htmlEditPart3;
   }
-  //Serial.println(htmlEdit);
+  Serial.print("html edit htmlEditContent: ");
+  Serial.println(htmlEditContent);
 }
 
-
+// Single function for changing LEDs colors, referring to the library only here
 void ledShow(int count, int red, int green, int blue){
   leds[count].setRGB(red, green, blue);
 }
 
-
+// Function to turn on all LEDs by one color
 void one_color_all(int cred, int cgrn, int cblu) {
   for (int i = 0 ; i < LEDcount; i++ ) {
     ledShow(i, cred, cgrn, cblu);
   }
 }
 
-
+// Turn on and hold MOSFET that control LED strip power
 void turnOnLED() {
   pinMode(LEDstripPower, OUTPUT);
   gpio_hold_dis(LEDstripPower);
@@ -286,7 +288,7 @@ void turnOnLED() {
   gpio_hold_en(LEDstripPower);
 }
 
-
+// Clear LEDs, turn off and hold MOSFET that control LED strip power
 void turnOffLED() {
   pinMode(LEDstripPower, OUTPUT);
   digitalWrite(LEDstripPower, HIGH);
@@ -296,18 +298,13 @@ void turnOffLED() {
   }
   LEDS.show();
   delay(100);
-  //pinMode(LEDstripPower, OUTPUT);
-  //pinMode(DATA_PIN_HOLD, OUTPUT);
   gpio_hold_dis(LEDstripPower);
   digitalWrite(LEDstripPower, LOW);
-  //digitalWrite(DATA_PIN_HOLD, HIGH);
-  //ESP.restart();
   gpio_hold_en(LEDstripPower);
-  //gpio_hold_en(DATA_PIN_HOLD);
   Serial.println("***led off***");
 }
 
-
+// Turn on and hold MOSFET that control OLED power
 void oledOn(){
   pinMode(OLEDpower, OUTPUT);
   gpio_hold_dis(OLEDpower);
@@ -315,7 +312,7 @@ void oledOn(){
   gpio_hold_en(OLEDpower);
 }
 
-
+// Clear, turn off and hold MOSFET that control OLED power
 void oledOff(){
   pinMode(OLEDpower, OUTPUT);
   gpio_hold_dis(OLEDpower);
@@ -328,7 +325,7 @@ void oledOff(){
   gpio_hold_en(OLEDpower);
 }
 
-
+// Initialize ESP32, if fail, rstart board
 void InitESPNow() {
   WiFi.disconnect();
   if (esp_now_init() == ESP_OK) {
@@ -336,17 +333,13 @@ void InitESPNow() {
   }
   else {
     Serial.println("ESPNow Init Failed");
-    // Retry InitESPNow, add a counte and then restart?
-    // InitESPNow();
-    // or Simply Restart
     ESP.restart();
   }
 }
 
-
+// Function for synchronization two boards, "Send" search for "Get device"
 void ScanForSlave() {
   int8_t scanResults = WiFi.scanNetworks();
-  // reset on each scan
   bool slaveFound = 0;
   memset(&slave, 0, sizeof(slave));
 
@@ -361,15 +354,14 @@ void ScanForSlave() {
       int32_t RSSI = WiFi.RSSI(i);
       String BSSIDstr = WiFi.BSSIDstr(i);
 
-      //if (PRINTSCANRESULTS) {
-        Serial.print(i + 1);
-        Serial.print(": ");
-        Serial.print(SSID);
-        Serial.print(" (");
-        Serial.print(RSSI);
-        Serial.print(")");
-        Serial.println("");
-      //}
+      Serial.print(i + 1);
+      Serial.print(": ");
+      Serial.print(SSID);
+      Serial.print(" (");
+      Serial.print(RSSI);
+      Serial.print(")");
+      Serial.println("");
+
       delay(10);
       // Check if the current device starts with `Slave`
       if (SSID.indexOf("PoClab") == 0) {
@@ -388,8 +380,6 @@ void ScanForSlave() {
         slave.encrypt = 0; // no encryption
 
         slaveFound = 1;
-        // we are planning to have only one slave in this example;
-        // Hence, break after we find one, to be a bit efficient
         break;
       }
     }
@@ -405,7 +395,7 @@ void ScanForSlave() {
   WiFi.scanDelete();
 }
 
-
+// Need for function "manageSlave", delete peer address from slave
 void deletePeer(){
   esp_err_t delStatus = esp_now_del_peer(slave.peer_addr);
   Serial.print("Slave Delete Status: ");
@@ -424,7 +414,7 @@ void deletePeer(){
   }
 }
 
-
+// Manage if slave peer exist, slave already paired, or show reason if not paired
 bool manageSlave() {
   if (slave.channel == CHANNEL) {
     if (DELETEBEFOREPAIR) {
@@ -473,10 +463,7 @@ bool manageSlave() {
   }
 }
 
-
-int resetCounter;
-
-
+// Function needed for "Sync" mode, send data to slave device
 void sendData() {
   char sendMode[952];
   esp_err_t result;
@@ -568,7 +555,7 @@ void sendData() {
     const uint8_t *peer_addr = slave.peer_addr;
     Serial.print("Sending: ");
     
-      for(int i = 0; i < (953/200)+1; i++){
+    for(int i = 0; i < (953/200)+1; i++){
       delay(1);
       char k[200];
       for(int j = 0; j < 200; j++){
@@ -586,7 +573,7 @@ void sendData() {
 
 
 delay(3);
-//result = esp_now_send(peer_addr, (uint8_t *) &mode11, sizeof(mode11));
+
   Serial.print("Send Status: ");
   if (result == ESP_OK) {
     Serial.println("Success");
@@ -607,7 +594,7 @@ delay(3);
 }
 
 int iii;
-
+// SSID, password and other configurations for slave to sync data
 void configDeviceAP() {
   const char *SSID = "PoClab";
   bool result = WiFi.softAP(SSID, "PoClab_Password", CHANNEL_2, 0);
@@ -618,7 +605,7 @@ void configDeviceAP() {
   }
 }
 
-
+// Function where slave already receive data from master device, show "SYNC" on the screen, and after receiving data go sleep
 void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
   // int ii;
   char macStr[18];
@@ -628,163 +615,158 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
   Serial.print("Last Packet Recv Data: "); Serial.println((char*)data);
   Serial.println("");
 
-    if(iii < 5){
-      if(iii == 0){
-        oledOn();
-        int rc;
-        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-        if (rc != OLED_NOT_FOUND){
-          oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
-          oledSetBackBuffer(&ssoled, ucBackBuffer);
-        }
-      }
-      mode111 = mode111 + (char*)data;
-      preferences.putString("mode11", mode00);
-      delay(3);
-      preferences.putString("mode11", mode111);
-      Serial.println(mode111);
-    }else if(iii < 10){
-      if(iii == 5){
-        oledOff();
-      }
-      mode112 = mode112 + (char*)data;
-      preferences.putString("mode12", mode00);
-      delay(3);
-      preferences.putString("mode12", mode112);
-      Serial.println(mode112);
-    }else if(iii < 15){
-      if(iii == 10){
-        oledOn();
-        int rc;
-        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-        if (rc != OLED_NOT_FOUND){
-          oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
-          oledSetBackBuffer(&ssoled, ucBackBuffer);
-        }
-      }
-      mode113 = mode113 + (char*)data;
-      preferences.putString("mode13", mode00);
-      delay(3);
-      preferences.putString("mode13", mode113);
-      Serial.println(mode113);
-    }else if(iii < 20){
-      if(iii == 15){
-        oledOff();
-      }
-      mode114 = mode114 + (char*)data;
-      preferences.putString("mode14", mode00);
-      delay(3);
-      preferences.putString("mode14", mode114);
-      Serial.println(mode114);
-    }else if(iii < 25){
-      if(iii == 20){
-        oledOn();
-        int rc;
-        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-        if (rc != OLED_NOT_FOUND){
-          oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
-          oledSetBackBuffer(&ssoled, ucBackBuffer);
-        }
-      }
-      mode115 = mode115 + (char*)data;
-      preferences.putString("mode15", mode00);
-      delay(3);
-      preferences.putString("mode15", mode115);
-      Serial.println(mode115);
-    }else if(iii < 30){
-      if(iii == 25){
-        oledOff();
-      }
-      mode116 = mode116 + (char*)data;
-      preferences.putString("mode16", mode00);
-      delay(3);
-      preferences.putString("mode16", mode116);
-      Serial.println(mode116);
-    }else if(iii < 35){
-      if(iii == 30){
-        oledOn();
-        int rc;
-        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-        if (rc != OLED_NOT_FOUND){
-          oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
-          oledSetBackBuffer(&ssoled, ucBackBuffer);
-        }
-      }
-      mode117 = mode117 + (char*)data;
-      preferences.putString("mode17", mode00);
-      delay(3);
-      preferences.putString("mode17", mode117);
-      Serial.println(mode117);
-    }else if(iii < 40){
-      if(iii == 35){
-        oledOff();
-      }
-      mode118 = mode118 + (char*)data;
-      preferences.putString("mode18", mode00);
-      delay(3);
-      preferences.putString("mode18", mode118);
-      Serial.println(mode118);
-    }else if(iii < 45){
-      if(iii == 40){
-        oledOn();
-        int rc;
-        rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
-        if (rc != OLED_NOT_FOUND){
-          oledFill(&ssoled, 0, 1);
-          oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
-          oledSetBackBuffer(&ssoled, ucBackBuffer);
-        }
-      }
-      mode119 = mode119 + (char*)data;
-      preferences.putString("mode19", mode00);
-      delay(3);
-      preferences.putString("mode19", mode119);
-      Serial.println(mode119);
-    }else if(iii < 50){
-      if(iii == 45){
-        oledOff();
-      }
-      mode120 = mode120 + (char*)data;
-      preferences.putString("mode20", mode00);
-      delay(3);
-      preferences.putString("mode20", mode120);
-      Serial.println(mode120);
-    }
-
-    iii+=1;
-
-    if(iii == 50){
+  if(iii < 5){
+    if(iii == 0){
       oledOn();
       int rc;
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND){
         oledFill(&ssoled, 0, 1);
-        oledWriteString(&ssoled, 0,3,1,(char*) "DONE", FONT_LARGE, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
         oledSetBackBuffer(&ssoled, ucBackBuffer);
-        delay(2500);
       }
-      oledOff();
-      delay(10);
-      ESP.restart();
     }
+    mode111 = mode111 + (char*)data;
+    preferences.putString("mode11", mode00);
+    delay(3);
+    preferences.putString("mode11", mode111);
+    Serial.println(mode111);
+  }else if(iii < 10){
+    if(iii == 5){
+      oledOff();
+    }
+    mode112 = mode112 + (char*)data;
+    preferences.putString("mode12", mode00);
+    delay(3);
+    preferences.putString("mode12", mode112);
+    Serial.println(mode112);
+  }else if(iii < 15){
+    if(iii == 10){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+    }
+    mode113 = mode113 + (char*)data;
+    preferences.putString("mode13", mode00);
+    delay(3);
+    preferences.putString("mode13", mode113);
+    Serial.println(mode113);
+  }else if(iii < 20){
+    if(iii == 15){
+      oledOff();
+    }
+    mode114 = mode114 + (char*)data;
+    preferences.putString("mode14", mode00);
+    delay(3);
+    preferences.putString("mode14", mode114);
+    Serial.println(mode114);
+  }else if(iii < 25){
+    if(iii == 20){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+    }
+    mode115 = mode115 + (char*)data;
+    preferences.putString("mode15", mode00);
+    delay(3);
+    preferences.putString("mode15", mode115);
+    Serial.println(mode115);
+  }else if(iii < 30){
+    if(iii == 25){
+      oledOff();
+    }
+    mode116 = mode116 + (char*)data;
+    preferences.putString("mode16", mode00);
+    delay(3);
+    preferences.putString("mode16", mode116);
+    Serial.println(mode116);
+  }else if(iii < 35){
+    if(iii == 30){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+    }
+    mode117 = mode117 + (char*)data;
+    preferences.putString("mode17", mode00);
+    delay(3);
+    preferences.putString("mode17", mode117);
+    Serial.println(mode117);
+  }else if(iii < 40){
+    if(iii == 35){
+      oledOff();
+    }
+    mode118 = mode118 + (char*)data;
+    preferences.putString("mode18", mode00);
+    delay(3);
+    preferences.putString("mode18", mode118);
+    Serial.println(mode118);
+  }else if(iii < 45){
+    if(iii == 40){
+      oledOn();
+      int rc;
+      rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+      if (rc != OLED_NOT_FOUND){
+        oledFill(&ssoled, 0, 1);
+        oledWriteString(&ssoled, 0,3,1,(char*) "SYNC", FONT_LARGE, 0, 1);
+        oledSetBackBuffer(&ssoled, ucBackBuffer);
+      }
+    }
+    mode119 = mode119 + (char*)data;
+    preferences.putString("mode19", mode00);
+    delay(3);
+    preferences.putString("mode19", mode119);
+    Serial.println(mode119);
+  }else if(iii < 50){
+    if(iii == 45){
+      oledOff();
+    }
+    mode120 = mode120 + (char*)data;
+    preferences.putString("mode20", mode00);
+    delay(3);
+    preferences.putString("mode20", mode120);
+    Serial.println(mode120);
+  }
 
-  // mode111 = mode111 + (char*)data;
-  // preferences.putString("mode11", mode111);
-   
+  iii+=1;
+
+  if(iii == 50){
+    oledOn();
+    int rc;
+    rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
+    if (rc != OLED_NOT_FOUND){
+      oledFill(&ssoled, 0, 1);
+      oledWriteString(&ssoled, 0,3,1,(char*) "DONE", FONT_LARGE, 0, 1);
+      oledSetBackBuffer(&ssoled, ucBackBuffer);
+      delay(2500);
+    }
+    oledOff();
+    delay(10);
+    ESP.restart();
+  }
 }
 
-
+// Function where master already send data to slave device
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   char macStr[18];
   snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
   Serial.print("Last Packet Sent to: "); Serial.println(macStr);
   Serial.print("Last Packet Send Status: ");  
-  //Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
  
   if(status == ESP_NOW_SEND_SUCCESS){
     Serial.println("Delivery Success");
@@ -797,14 +779,9 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   }
 }
 
-
+// One of device modes ("Get"), this is slave device for sync
 void btSGet(){
-
-  //#%3A=%23ffff80&LED2%3A=%23ffff00&LED3%3A=%23ff80c0&LED4%3A=%23ff80ff&LED5%3A=%23ff00ff&LED6%3A=%23ff0080&LED7%3A=%238000ff&LED8%3A=%23000000&3000000&LED9%3A=%2LED10%3A=%23000000&LED11%3A=%23000000&LED12%3A=%23000000&LED13%3A=%23000000&LED14%3A=%23000000&LED15%3A=%23000000&LED16%3A=%23000000&LED17%3A=%23000000&LED18%3A=%23000000&LED19%3A=%23000000&LED20%3A=%23000000&LED21%3A=%23000000&LED22%3A=%23000000&LED23%3A=%23000000&LED24%3A=%23000000&LED25%3A=%23000000&LED26%3A=%23000000&LED27%3A=%23000000&LED28%3A=%23000000&LED29%3A=%23000000&LED30%3A=%23800040&LED31%3A=%23000000&LED32%3A=%23000000&LED33%3A=%23000000&LED34%3A=%23000000&LED35%3A=%23000000&Save=true HTTP/1.1,#ffff80,#ffff00,#ff80c0,#ff80ff,#ff00ff,#ff0080,#8000ff,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#000000,#800040,#000000,#000000,#000000,#000000,#000000
-
   preferences.putInt("wfBtMode", 0);
-
-  //preferences.putInt("wfBtMode", 3);
 
   Serial.print("button value: ");
   Serial.println(digitalRead(Button));
@@ -822,8 +799,6 @@ void btSGet(){
     oledSetBackBuffer(&ssoled, ucBackBuffer);
   }
 
-  // unsigned long t_end_check_4;
-
   delay(100);
 
   unsigned long t_end_check_4;
@@ -831,7 +806,7 @@ void btSGet(){
   unsigned long timing;
   timing = millis(); 
 
-  while(millis() - timing < 3000){
+  while(millis() - timing < waitButtonModes){
     while (digitalRead(Button) == HIGH) { 
       t_end_check_4 = millis();
     }
@@ -839,7 +814,6 @@ void btSGet(){
     while (millis() - t_end_check_4 < 100) {
       if (digitalRead(Button) == LOW) {
         Serial.println("short button press in btGet() setup");
-        //btStop();
         preferences.putInt("wfBtMode", 1);
         delay(10);
         ESP.restart();
@@ -870,14 +844,12 @@ void btSGet(){
     while (millis() - t_end_check_4 < 100) {
       if (digitalRead(Button) == LOW) {
         Serial.println("short button press in btGet() setup");
-        //btStop();
         preferences.putInt("wfBtMode", 1);
         delay(10);
-        //ESP.restart();
         WiFiConfig();
       }
     }
-    if(millis() - millisTimeout >= 60000){
+    if(millis() - millisTimeout >= getMillisTimeout){
       Serial.println("timeout in btSent(), board will reset now");
       delay(10);
       ESP.restart();
@@ -885,18 +857,14 @@ void btSGet(){
   }
 }
 
-
+// One of device modes ("Sent"), this is master device for sync
 void btSent(){
 
   Serial.print("button value: ");
   Serial.println(digitalRead(Button));
 
-  // wfBtMode = 2;
-
   preferences.putInt("wfBtMode", 0);
-
-  //oledOn();
-  
+ 
   Serial.println("Starting OLED...");
 
   oledOn();
@@ -920,7 +888,7 @@ void btSent(){
   unsigned long timing7;
   timing7 = millis();
 
-  while(millis() - timing7 < 3000){
+  while(millis() - timing7 < waitButtonModes){
     while (digitalRead(Button) == HIGH) { 
       t_end_check_3 = millis();
     }
@@ -928,18 +896,12 @@ void btSent(){
     while (millis() - t_end_check_3 < 100) {
       if (digitalRead(Button) == LOW) {
         Serial.println("short button press in btGet() setup");
-        //btStop();
         preferences.putInt("wfBtMode", 3);
         delay(10);
-        //ESP.restart();
         btSGet();
       }
     }
   }
-
-  //unsigned long t_end_check_3;
-
-  
 
   WiFi.mode(WIFI_STA);
   Serial.println("ESPNow/Basic/Master Example");
@@ -961,61 +923,49 @@ void btSent(){
 
   while(1){
 
-    //while(millis() - timing2 < 300){
-      while (digitalRead(Button) == HIGH) { 
-        t_end_check_3 = millis();
+    while (digitalRead(Button) == HIGH) { 
+      t_end_check_3 = millis();
+    }
+
+    while (millis() - t_end_check_3 < 100) {
+      if (digitalRead(Button) == LOW) {
+        Serial.println("short button press in btSent() setup");
+        preferences.putInt("wfBtMode", 3);
+        delay(100);
+        btSGet();
       }
+    }
 
-      while (millis() - t_end_check_3 < 100) {
-        if (digitalRead(Button) == LOW) {
-          Serial.println("short button press in btSent() setup");
-          preferences.putInt("wfBtMode", 3);
-          delay(100);
-          //ESP.restart();
-          btSGet();
-        }
+    if(millis() - millisTimeout >= sentMillisTimeout){
+      Serial.println("timeout in btSent(), board will reset now");
+      delay(10);
+      ESP.restart();
+    }
+
+    ScanForSlave();
+    // If Slave is found, it would be populate in `slave` variable
+    // We will check if `slave` is defined and then we proceed further
+    if (slave.channel == CHANNEL) { // check if slave channel is defined
+      // `slave` is defined
+      // Add slave as peer if it has not been added already
+      bool isPaired = manageSlave();
+      if (isPaired) {
+        // pair success or already paired
+        // Send data to device
+        sendData();
+        millisTimeout = millis();
+      } else {
+        // slave pair failed
+        Serial.println("Slave pair failed!");
       }
-    //}
-
-      if(millis() - millisTimeout >= 60000){
-        Serial.println("timeout in btSent(), board will reset now");
-        delay(10);
-        ESP.restart();
-      }
-
-    //if (millis() - timing > 3000){
-
-      ScanForSlave();
-      // If Slave is found, it would be populate in `slave` variable
-      // We will check if `slave` is defined and then we proceed further
-      if (slave.channel == CHANNEL) { // check if slave channel is defined
-        // `slave` is defined
-        // Add slave as peer if it has not been added already
-        bool isPaired = manageSlave();
-        if (isPaired) {
-          // pair success or already paired
-          // Send data to device
-          sendData();
-          millisTimeout = millis();
-        } else {
-          // slave pair failed
-          Serial.println("Slave pair failed!");
-        }
-      }
-      else {
-        // No slave found to process
-      }
-
-      // wait for 3seconds to run the logic again
-      //delay(3000);
-    //}
-
-    //timing2 = millis(); 
-  
+    }
+    else {
+      // No slave found to process
+    }
   }
 }
 
-
+// One of device modes ("WiFi"), this function exist all WEB page in html, saving data in flash from WEB
 void WiFiConfig() {
 
   Serial.print("button value: ");
@@ -1026,12 +976,6 @@ void WiFiConfig() {
   unsigned long wifiOffTimer;
 
   preferences.putInt("wfBtMode", 0);
-
-  //preferences.putInt("wfBtMode", 1);
-
-  // btSent();
-
-  // delay(100);
 
   Serial.println("Starting OLED...");
 
@@ -1048,8 +992,6 @@ void WiFiConfig() {
     oledSetBackBuffer(&ssoled, ucBackBuffer);
     delay(100);
   }
-
-  //delay(50);
 
   unsigned long t_end_check_2;
 
@@ -1074,11 +1016,6 @@ void WiFiConfig() {
 
   delay(10);
 
-  //Serial.println(WiFi.softAP(WiFiName.c_str()) ? "soft-AP setup": "Failed to connect");
-
-  //Serial.println(WiFi.softAPIP());
-  //WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-
   dnsServer.start(DNS_PORT, "*", apIP);
   server.begin();
   
@@ -1090,7 +1027,6 @@ void WiFiConfig() {
 
     while (millis() - t_end_check_2 < 100) {
       if (digitalRead(Button) == LOW) {
-        //WiFi.mode(WIFI_OFF);
         Serial.println("short button press in WiFi setup");
         btSent();
       }
@@ -1098,17 +1034,12 @@ void WiFiConfig() {
 
     delay(10);
 
-    //LEDcount = preferences.getInt("LEDcount", LEDcount);
     dnsServer.processNextRequest();
     WiFiClient client = server.available(); 
     if (client) {
       String currentLine = "";
       while (client.connected()) {
         if (client.available()) {
-          // if(clientCounter == 0){
-          //   clientCounter = 1;
-          //   t_start_check_web = millis();
-          // }
           char c = client.read();
           if (c == '\n') {
             if (currentLine.length() == 0) {
@@ -1118,18 +1049,15 @@ void WiFiConfig() {
               if (pageNum == 1) {
                 wifiModeTrue = 1;
                 String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
-                  + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/"> <tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr><tr> <td><strong><em>Device settings:</em></strong></td></tr><tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
+                  + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/">  <tr> <td><strong><em>Device settings:</em></strong></td></tr>  <tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
                   + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
                   + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
-                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
+                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr> <tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
 
                 client.print(htmlMain);
               }
               if (pageNum == 0) {
                 client.print(htmlEdit);
-              }
-              if (pageNum == 2) { 
-                client.print(htmlSaveConfirm);
               }
               if (pageNum == 3) {
                 client.print(htmlExitConfirm);
@@ -1196,9 +1124,6 @@ void WiFiConfig() {
                   break;
                 }
                 if (currentLine.indexOf("Save") != -1) {
-                  client.println();
-                  client.print(htmlSaveConfirm);
-                  pageNum = 2;
 
                   WiFiName = currentLine.substring(currentLine.indexOf("?devname=") + 9, currentLine.indexOf("&devpass=")); //get WiFiName from substring
                   Serial.print("WiFiName:");
@@ -1218,9 +1143,6 @@ void WiFiConfig() {
                   Serial.println(LEDcount);
 
                   if(WiFiPass && (strlen(WiFiPass.c_str()) > 0 && strlen(WiFiPass.c_str()) < 8)) {
-                    // fail passphrase too short
-                    //log_e("passphrase too short!");
-                    //return false;
                     preferences.putString("wifi_pass", "");
                     Serial.println("Wifi password is too short");
                   }else{
@@ -1232,6 +1154,15 @@ void WiFiConfig() {
                   
                   preferences.putInt("LEDcount", LEDcount);
 
+                  client.println();
+                  String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
+                  + style + R"rawText(<center> Settings saved! </center><table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/">  <tr> <td><strong><em>Device settings:</em></strong></td></tr>  <tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
+                  + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
+                  + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
+                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr> <tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
+
+                  client.print(htmlMain);
+                  pageNum = 1;                 
                   break;
                 }
               }
@@ -1240,10 +1171,10 @@ void WiFiConfig() {
                 if (currentLine.indexOf("Back") != -1) {
                   client.println();
                   String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
-                  + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/"> <tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr><tr> <td><strong><em>Device settings:</em></strong></td></tr><tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
+                  + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/">  <tr> <td><strong><em>Device settings:</em></strong></td></tr>  <tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
                   + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
                   + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
-                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
+                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr> <tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
 
                   client.print(htmlMain);
                   pageNum = 1;
@@ -1271,6 +1202,7 @@ void WiFiConfig() {
                     delay(3);
                     preferences.putString("mode11", newColours);
                     mode11 = newColours;
+                    Serial.println(newColours);
                   }
                   if (modeNumber == 12) {
                     preferences.putString("mode12", mode00);
@@ -1327,45 +1259,24 @@ void WiFiConfig() {
                     mode20 = newColours;
                   }
                   client.println();
-                  client.print(htmlSaveConfirm);
-                  pageNum = 2;
-
-                  break;
-                }
-              }
-
-              if (pageNum == 2) {
-                if (currentLine.indexOf("Exit") != -1) {
-                  client.println();
-                  client.print(htmlExitConfirm);
-                  pageNum = 3;
-                  break;
-                }
-                if (currentLine.indexOf("Back") != -1) {
-                  client.println();
                   String htmlMain = R"rawText(<!DOCTYPE html><html><body>)rawText"
-                  + style + R"rawText(<table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/"> <tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr><tr> <td><strong><em>Device settings:</em></strong></td></tr><tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
+                  + style + R"rawText(<center> Settings saved! </center> <table width="40%" align="left"> <tbody> <tr> <td colspan="3"><strong><em>LED Jeans by 519Obsessions</em></strong></td></tr><form action="/">  <tr> <td><strong><em>Device settings:</em></strong></td></tr>  <tr> <td>Dev name (WiFi name):</td><td><input type="text" id="devname" name="devname" value=")rawText"
                   + WiFiName + R"rawText("></td></tr><tr> <td>Dev pass (WiFi pass):<br> *password must be at least 8 characters </td><td><input type="text" id="devpass" name="devpass" value=")rawText"
                   + WiFiPass + R"rawText("></td></td></tr><tr> <td>LEDs count in strip: <br> *not more than 35 LEDs </td><td><input type="number" idLEDs count in strip:="ledcount" name="ledcount" value=")rawText"
-                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
+                  + String(LEDcount) + R"rawText("></td></td></tr><tr> <td><strong>Mode:</strong></td><td><strong>Mode name:</strong></td></tr><tr> <td>Mode 1:</td><td><input type="submit" value="Rainbow" name="mode1"/></td></tr><tr> <td>Mode 2:</td><td>Blue</td></tr><tr> <td>Mode 3:</td><td>Purple</td></tr><tr> <td>Mode 4:</td><td>Pink</td></tr><tr> <td>Mode 5:</td><td>Red</td></tr><tr> <td>Mode 6:</td><td>Orange</td></tr><tr> <td>Mode 7:</td><td>Yellow</td></tr><tr> <td>Mode 8:</td><td>Green</td></tr><tr> <td>Mode 9:</td><td>Light blue</td></tr><tr> <td>Mode 10:</td><td>White</td></tr><tr> <td>Mode 11:</td><td><input type="submit" value="Edit" name="mode11"/></td></tr><tr> <td>Mode 12:</td><td><input type="submit" value="Edit" name="mode12"/></td></tr><tr> <td>Mode 13:</td><td><input type="submit" value="Edit" name="mode13"/></td></tr><tr> <td>Mode 14:</td><td><input type="submit" value="Edit" name="mode14"/></td></tr><tr> <td>Mode 15:</td><td><input type="submit" value="Edit" name="mode15"/></td></tr><tr> <td>Mode 16:</td><td><input type="submit" value="Edit" name="mode16"/></td></tr><tr> <td>Mode 17:</td><td><input type="submit" value="Edit" name="mode17"/></td></tr><tr> <td>Mode 18:</td><td><input type="submit" value="Edit" name="mode18"/></td></tr><tr> <td>Mode 19:</td><td><input type="submit" value="Edit" name="mode19"/></td></tr><tr> <td>Mode 20:</td><td><input type="submit" value="Edit" name="mode20"/></td></tr> <tr> <td><button name="Save" value="true">Save</button></form></td><td><form action="/"><button name="Exit" value="true">Exit</button> </form></td></tr><tr> <td>&copy; LED Jeans by 519Obsessions</td></tr></tbody> </table> </body></html>)rawText";
 
                   client.print(htmlMain);
-                  Serial.println("Back to WiFi config mode");
                   pageNum = 1;
                   break;
                 }
               }
-              //Serial.println(pageNum);
               currentLine = "";
             }
-            //Serial.println(pageNum);
 
             if(pageCount != pageNum){
               t_start_check_web = millis();
               pageCount = pageNum;
               Serial.println("millis = count");
-              // delay(10);
-              // Serial.println(millis() - t_start_check_web);
             }
           } else if (c != '\r') {
             currentLine += c;
@@ -1376,8 +1287,7 @@ void WiFiConfig() {
       client.stop();
     }
 
-    if (millis() - t_start_check_web > 180000) {
-    //if (millis() - t_start_check_web > 60000) {
+    if (millis() - t_start_check_web > WiFiMillisTimeout) {
       client.print(htmlExitConfirm);
       Serial.println("Exit from WiFi config mode");
       Serial.println("ESP restart in 1 second");
@@ -1396,7 +1306,7 @@ void WiFiConfig() {
   }
 }
 
-
+// Print colors from mode string
 void sendModeFromString(String buff) {  
 
   Serial.println("String to parse");
@@ -1432,19 +1342,10 @@ void sendModeFromString(String buff) {
     Serial.println(g);
     Serial.print("Blue:");
     Serial.println(b);
-
-    //ledShow(i, r, g, b);
-
-    // if(r == 0 || g == 0 || b == 0){
-    //   colorVal = 1;
-    // }
   }
-  // if(colorVal == 0){
-  //   //turnOffLED();
-  // }
 }
 
-
+// Function wheere we convert data from mode string (string with color codes), to RGB color values
 void showModeFromString(String buff) {  
 
   colorVal = 0;
@@ -1452,11 +1353,7 @@ void showModeFromString(String buff) {
   turnOnLED();
   delay(10);
   
-  // Serial.println("String to parse");
-  // Serial.println(buff);
   buff.replace(",", ""); 
-  // Serial.println("String after removing comma symbol");
-  // Serial.println(buff);
 
   for (int i = 0; i < LEDcount; i++) {
     
@@ -1466,32 +1363,19 @@ void showModeFromString(String buff) {
     }
 
     String hexString = buff.substring(1, buff.indexOf("#", 1)).c_str(); //char* hex="#6f56a3";
-    // Serial.print("Colour hexString:");
-    // Serial.println(hexString);
-
     buff = buff.substring(buff.indexOf("#", 1));
-    // Serial.print("Rest of the String:");
-    // Serial.println(buff);
 
     long number = strtol( &hexString[0], NULL, 16);
     long r = number >> 16;
     long g = number >> 8 & 0xFF;
     long b = number & 0xFF;
 
-    // Serial.println("Parsed colours: ");
-    // Serial.print("Red:");
-    // Serial.println(r);
-    // Serial.print("Green:");
-    // Serial.println(g);
-    // Serial.print("Blue:");
-    // Serial.println(b);
-
     ledShow(i, g, r, b);
 
     if(r != 0 || g != 0 || b != 0){
       colorVal = 1;
 
-      esp_sleep_enable_timer_wakeup(6000000);
+      esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
 
     }
   }
@@ -1501,7 +1385,7 @@ void showModeFromString(String buff) {
   }
 }
 
-
+// Depending on mode, call needed functions to show correct colors
 void ShowColours(int mode_light) {
   if (mode_light == 0) {
     turnOffLED();
@@ -1545,43 +1429,43 @@ void ShowColours(int mode_light) {
         ledShow(i+ledCount3+ledCount3+ledCount3, 0, 0, 255);
       }
     }
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 2) {
     one_color_all(0, 0, 255); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 3) {
     one_color_all(0, 200, 255); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 4) {
     one_color_all(0, 255, 200); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 5) {
     one_color_all(0, 255, 0); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 6) {
     one_color_all(140, 255, 0); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 7) {
     one_color_all(255, 255, 0); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 8) {
     one_color_all(255, 0, 0); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 9) {
     one_color_all(224, 130, 250); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
   else if (mode_light == 10) {
     one_color_all(255, 255, 255); 
-    esp_sleep_enable_timer_wakeup(6000000);
+    esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
   }
 
   else if (mode_light == 11) {
@@ -1615,13 +1499,12 @@ void ShowColours(int mode_light) {
     showModeFromString(mode20);
   }
 
-  //LEDS.setBrightness(max_bright);
   delay(10);
   LEDS.show();
   Serial.println("LED strip updated");
 }
 
-
+// Main time ESP32 in deep sleep, this function show wakeup reason (button, timer)
 int print_wakeup_reason(){
   esp_sleep_wakeup_cause_t wakeup_reason;
 
@@ -1638,11 +1521,13 @@ int print_wakeup_reason(){
   }
 }
 
-
+// Main function where choosing modes, reding bat values etc.
 void setup() {
 
   preferences.begin("settings", false);
 
+  //preferences.clear();
+  
   mode11 = preferences.getString("mode11", "");
   mode12 = preferences.getString("mode12", "");
   mode13 = preferences.getString("mode13", "");
@@ -1655,6 +1540,10 @@ void setup() {
   mode20 = preferences.getString("mode20", "");
   WiFiName = preferences.getString("wifi_name", "");
   //preferences.putInt("ledMode", 0);
+
+  if(mode11 == ""){
+    mode11 = "#1117e8,#112ed1,#1145ba,#115ca3,#11738c,#118a75,#11a15e,#11b847,#11cf30,#11e619,#11fd02,#17e800,#2ed100,#45ba00,#5ca300,#738c00,#8a7500,#a15e00,#b84700,#cf3000,#e61900,#fd0200,#e80017,#d1002e,#ba0045,#a3005c,#8c0073,#75008a,#5e00a1,#4700b8,#3000cf,#1900e6,#1100fd,#1111ff,#1111ff";
+  }
 
   pinMode(Button, INPUT);
   
@@ -1679,63 +1568,55 @@ void setup() {
       esp_deep_sleep_start();
     }else{
       esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
-      esp_sleep_enable_timer_wakeup(6000000);
+      esp_sleep_enable_timer_wakeup(esp32SleepWakeupTimer);
       esp_deep_sleep_start();
     }
   }
-
-  Serial.println(preferences.getString("mode11", ""));
-
-  Serial.println(preferences.getInt("wfBtMode", 0));
 
   if(preferences.getInt("wfBtMode", 0) != 0){
     //delay(500);
     if(preferences.getInt("wfBtMode", 0) == 1){
       ledCount3 = LEDcount / 3;
-    step1 = 255 / ledCount3;
-    
-    
-    int r = 17;
-    int g = 0;
-    int b = 255;
-    
-    for(int i = 0; i < ledCount3; i++){
-      //ledShow(i, r, g+=step1, b-=step1);
-      ledArr[i][0] = r;
-      ledArr[i][1] = g+=step1;
-      ledArr[i][2] = b-=step1;
-    }
-
-    r = 0;
-    g = 255;
-    b = 0;
-    
-    for(int i = 0; i < ledCount3; i++){
-      //ledShow(i+ledCount3, r+=step1, g-=step1, b);
-      ledArr[i+ledCount3][0] = r+=step1;
-      ledArr[i+ledCount3][1] = g-=step1;
-      ledArr[i+ledCount3][2] = b;
-    }
-
-    r = 255;
-    g = 0;
-    b = 0;
-    
-    for(int i = 0; i < ledCount3; i++){
-      //ledShow(i+ledCount3+ledCount3, r-=step1, g, b+=step1);
-      if((r - step1) >= 17){
-        ledArr[i+ledCount3+ledCount3][0] = r-=step1;
-      }else{
-        ledArr[i+ledCount3+ledCount3][0] = 17;
+      step1 = 255 / ledCount3;
+      
+      
+      int r = 17;
+      int g = 0;
+      int b = 255;
+      
+      for(int i = 0; i < ledCount3; i++){
+        ledArr[i][0] = r;
+        ledArr[i][1] = g+=step1;
+        ledArr[i][2] = b-=step1;
       }
-      delay(5);
-      ledArr[i+ledCount3+ledCount3][1] = g;
-      ledArr[i+ledCount3+ledCount3][2] = b+=step1;
-    }
 
-    if(ledCount3 * 3 != LEDcount){
+      r = 0;
+      g = 255;
+      b = 0;
+      
+      for(int i = 0; i < ledCount3; i++){
+        ledArr[i+ledCount3][0] = r+=step1;
+        ledArr[i+ledCount3][1] = g-=step1;
+        ledArr[i+ledCount3][2] = b;
+      }
+
+      r = 255;
+      g = 0;
+      b = 0;
+      
+      for(int i = 0; i < ledCount3; i++){
+        if((r - step1) >= 17){
+          ledArr[i+ledCount3+ledCount3][0] = r-=step1;
+        }else{
+          ledArr[i+ledCount3+ledCount3][0] = 17;
+        }
+        delay(5);
+        ledArr[i+ledCount3+ledCount3][1] = g;
+        ledArr[i+ledCount3+ledCount3][2] = b+=step1;
+      }
+
+      if(ledCount3 * 3 != LEDcount){
       for(int i = 0; i < (LEDcount - (ledCount3 * 3)); i++){
-        //ledShow(i+ledCount3+ledCount3+ledCount3, 0, 0, 255);
         ledArr[i+ledCount3+ledCount3+ledCount3][0] = 17;
         ledArr[i+ledCount3+ledCount3+ledCount3][1] = 17;
         ledArr[i+ledCount3+ledCount3+ledCount3][2] = 255;
@@ -1784,9 +1665,7 @@ void setup() {
       String chargingState = String(bat) + "%";
   
       int rc;
-      //int a = 1;
-//      String c = "xcvbnb";
-      
+
       rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
       if (rc != OLED_NOT_FOUND && bat < 10){
         oledFill(&ssoled, 0, 1);
@@ -1815,15 +1694,10 @@ void setup() {
   if(chargPin == LOW){
     oledOff();
     val = 0;
-    //resetCount = 0;
   }
 
-
-  Serial.print("bat level: ");
-  Serial.println(getBatteryState());
-
   if(getBatteryState() <= 5){
-    
+
     Serial.print("Reset count value is: ");
     Serial.println(resetCount);
     resetCount = 1;
@@ -1908,7 +1782,6 @@ void setup() {
     WiFi.mode(WIFI_OFF);
     btStop();
     delay(10);
-    //ESP.restart();
     esp_deep_sleep_start();
   }
 
@@ -1916,9 +1789,6 @@ void setup() {
   FastLED.addLeds<WS2811, DATA_PIN, RGB>(leds, LEDcount);
   LEDS.setBrightness(max_bright);
   count = LEDcount;
-  
-  //esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-
   
   // if (preferences.getString("wifi_name", "") == "") {
   //   Serial.println("^^^^^^^^^^^^^^ ");
@@ -1986,8 +1856,6 @@ void setup() {
     del = millis();
     checkButtonMillis = millis();
 
-   // delay(50);
-
     while(millis() - checkButtonMillis < 700){
 
       delay(50);
@@ -2049,8 +1917,7 @@ void setup() {
     String chargingState = String(getBatteryState()) + "%";
 
     int rc;
-    //int a = 1;
-    
+
     rc = oledInit(&ssoled, MY_OLED, OLED_ADDR, FLIP180, INVERT, USE_HW_I2C, SDA_PIN, SCL_PIN, RESET_PIN, 400000L); // use standard I2C bus at 400Khz
     if (rc != OLED_NOT_FOUND && bat < 10){
       oledFill(&ssoled, 0, 1);
@@ -2080,10 +1947,6 @@ void setup() {
 
   else if (deviceAction == 2) {
 
-
-    // int ledCount3;
-    // int step1;
-    // int ledArr[ledCount3][3];
     ledCount3 = LEDcount / 3;
     step1 = 255 / ledCount3;
     
@@ -2093,7 +1956,6 @@ void setup() {
     int b = 255;
     
     for(int i = 0; i < ledCount3; i++){
-      //ledShow(i, r, g+=step1, b-=step1);
       ledArr[i][0] = r;
       ledArr[i][1] = g+=step1;
       ledArr[i][2] = b-=step1;
@@ -2104,7 +1966,6 @@ void setup() {
     b = 0;
     
     for(int i = 0; i < ledCount3; i++){
-      //ledShow(i+ledCount3, r+=step1, g-=step1, b);
       ledArr[i+ledCount3][0] = r+=step1;
       ledArr[i+ledCount3][1] = g-=step1;
       ledArr[i+ledCount3][2] = b;
@@ -2115,7 +1976,6 @@ void setup() {
     b = 0;
     
     for(int i = 0; i < ledCount3; i++){
-      //ledShow(i+ledCount3+ledCount3, r-=step1, g, b+=step1);
       if((r - step1) >= 17){
         ledArr[i+ledCount3+ledCount3][0] = r-=step1;
       }else{
@@ -2128,14 +1988,12 @@ void setup() {
 
     if(ledCount3 * 3 != LEDcount){
       for(int i = 0; i < (LEDcount - (ledCount3 * 3)); i++){
-        //ledShow(i+ledCount3+ledCount3+ledCount3, 0, 0, 255);
         ledArr[i+ledCount3+ledCount3+ledCount3][0] = 17;
         ledArr[i+ledCount3+ledCount3+ledCount3][1] = 17;
         ledArr[i+ledCount3+ledCount3+ledCount3][2] = 255;
       }
     }
     delay(200);
-
 
     oledOn();
     turnOnLED();
@@ -2161,7 +2019,6 @@ void setup() {
       delay(1000);
       oledOff();
       turnOffLED();
-      //delay(500);
     } 
     
     preferences.putString("wifi_name", "LED_Jeans_by_519Obsessions");
@@ -2173,7 +2030,6 @@ void setup() {
   WiFi.mode(WIFI_OFF);
   btStop(); 
 
-
   delay(100);
 
   esp_sleep_enable_ext1_wakeup(BUTTON_PIN_BITMASK,ESP_EXT1_WAKEUP_ANY_HIGH);
@@ -2181,7 +2037,6 @@ void setup() {
   //ESP.restart();
   delay(100);
   esp_deep_sleep_start();
-  
 }
 
 
